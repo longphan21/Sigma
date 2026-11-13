@@ -75,25 +75,33 @@ def _group_by_y(items: List[Tuple[float, str]], tolerance: float = 2.2) -> List[
 def _parse_test_header(raw_header: str) -> Tuple[str, str, str]:
     """
     Tách tên đầy đủ, mã viết tắt và đơn vị đo từ chuỗi tiêu đề thông số VEQAS.
-    Ví dụ:
-      - "Alanine Aminotransferase (ALT) U/L" -> ("ALT", "Alanine Aminotransferase (ALT)", "U/L")
-      - "LDL-Cholesterol (Pilot) (LDL) mmol/L" -> ("LDL", "LDL-Cholesterol (Pilot) (LDL)", "mmol/L")
-      - "Calcium Total (Ca) mmol/L" -> ("Ca", "Calcium Total (Ca)", "mmol/L")
+    Có xử lý lỗi dấu ngoặc lồng nhau (VD: ALT (GPT)).
     """
     s = raw_header.strip()
-    # Tìm tất cả các cụm trong ngoặc đơn (...)
-    parens = list(re.finditer(r"\(([^()]+)\)", s))
-    if parens:
-        last_paren = parens[-1]
-        test_code = last_paren.group(1).strip()
-        unit = s[last_paren.end():].strip()
-        full_name = s[:last_paren.end()].strip()
-        return test_code, full_name, unit
 
-    parts = s.rsplit(" ", 1)
-    if len(parts) == 2:
-        return parts[0].strip(), parts[0].strip(), parts[1].strip()
-    return s, s, ""
+    # Tìm tất cả các cụm nằm trong ngoặc
+    parens = list(re.finditer(r"\(([^()]+)\)", s))
+    if not parens:
+        parts = s.rsplit(" ", 1)
+        if len(parts) == 2:
+            return parts[0].strip(), parts[0].strip(), parts[1].strip()
+        return s, s, ""
+
+    # Lấy cụm ngoặc cuối cùng làm mã Code
+    last_paren = parens[-1]
+    test_code = last_paren.group(1).strip()
+
+    # Đơn vị là phần nằm sau cụm ngoặc cuối
+    unit = s[last_paren.end():].strip()
+
+    # Xử lý dứt điểm lỗi dư dấu đóng ngoặc do ngoặc lồng nhau
+    if unit.startswith(")"):
+        unit = unit[1:].strip()
+
+    # Tên đầy đủ là toàn bộ chuỗi ban đầu trừ đi phần đơn vị
+    full_name = s if not unit else s[:-len(unit)].strip()
+
+    return test_code, full_name, unit
 
 
 def _parse_peer_row(tokens: List[str]) -> Dict[str, Any]:
