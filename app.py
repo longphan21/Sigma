@@ -104,28 +104,22 @@ if page == "1. Overview":
                 b_results = [
                     r for r in b_results
                     if search_kw in str(r.get("test_code", "")).lower()
-                    or search_kw in str(r.get("test_full_name", "")).lower()
+                       or search_kw in str(r.get("test_full_name", "")).lower()
                 ]
             if not b_results:
                 continue
 
             shown_batches += 1
-            render_html(f"""
-            <div class="month-header-banner">
-                📅 {b['batch_label']} — Chương trình: {b['program_name']} ({b['program_code']}) | Máy: {b['instrument_name']} | Mã ĐV: {b['unit_code']}
-            </div>
-            """)
 
-            if view_mode == "Compact List":
-                render_overview_compact_card(b, b_results)
-            else:
-                with st.container(border=True):
+            # Gộp thông tin thành tiêu đề và đưa vào hộp đóng/mở (Expander)
+            expander_title = f"📅 {b['batch_label']} — Chương trình: {b['program_name']} ({b['program_code']}) | Máy: {b['instrument_name']} | Mã ĐV: {b['unit_code']}"
+
+            with st.expander(expander_title, expanded=False):
+                if view_mode == "Compact List":
+                    render_overview_compact_card(b, b_results)
+                else:
                     render_batch_meta_bar(b)
                     render_eqa_results_table(b_results, max_height=360)
-
-        if shown_batches == 0:
-            render_html('<div class="search-result-pill">Không tìm thấy đợt ngoại kiểm nào khớp với điều kiện lọc.</div>')
-
 
 # ==============================================================================
 # TRANG 2: IMPORT EQA PDF - BÓC TÁCH VÀ LƯU FILE PDF NGOẠI KIỂM VÀO DATABASE
