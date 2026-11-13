@@ -28,7 +28,6 @@ def _assign_concentration_levels(
         df["suggested_level"] = "Mức 1"
         return df, [0.0] * num_levels
 
-    # Xác định nồng độ trung tâm (centers) cho từng mức
     if any(t > 0 for t in custom_targets):
         centers = custom_targets
     else:
@@ -45,9 +44,8 @@ def _assign_concentration_levels(
             q3 = float(pd.Series(s_vals).quantile(0.80))
             centers = [round(q1, 3), round(q2, 3), round(q3, 3)]
 
-    # Nếu tất cả các đợt có cùng 1 giá trị ấn định (chênh lệch không đáng kể)
     min_v, max_v = min(vals), max(vals)
-    is_ narrow_spread = (max_v - min_v) <= (0.05 * max(abs(min_v), 1e-6))
+    is_narrow_spread = (max_v - min_v) <= (0.05 * max(abs(min_v), 1e-6))
 
     assigned_levels = []
     for _, row in df.iterrows():
@@ -55,7 +53,6 @@ def _assign_concentration_levels(
         if pd.isna(val) or is_narrow_spread:
             assigned_levels.append("Hỗn hợp / Chung")
             continue
-        # Tìm mức có khoảng cách gần nhất với Giá trị ấn định
         distances = [abs(float(val) - c) for c in centers]
         min_idx = distances.index(min(distances))
         assigned_levels.append(f"Mức {min_idx + 1}")
@@ -73,23 +70,18 @@ def _auto_select_batches_for_level(
     """
     Trả về danh sách True/False tương ứng với các đợt được chọn cho `level_label`
     cùng chuỗi mô tả quy tắc đã áp dụng.
-    df_sorted: DataFrame đã sắp xếp từ đợt mới nhất -> cũ nhất.
     """
     n_total = len(df_sorted)
     if n_total == 0:
         return [], "Không có dữ liệu"
 
-    # Chế độ 1: Lấy tất cả các đợt
     if strategy == "all":
         return [True] * n_total, f"Lấy toàn bộ {n_total} đợt hiện có"
 
-    # Chế độ 2: Luôn lấy N đợt gần nhất không phân biệt nồng độ
     if strategy == "latest_n":
         flags = [i < min_batches for i in range(n_total)]
         return flags, f"Lấy {min(n_total, min_batches)} đợt gần nhất (không chia nồng độ)"
 
-    # Chế độ 3 (Mặc định - Auto thông minh theo quy tắc của lab):
-    # Tìm các dòng thuộc đúng `level_label`
     matching_indices = [
         idx for idx, lv in enumerate(df_sorted["suggested_level"].tolist())
         if lv == level_label
@@ -100,7 +92,6 @@ def _auto_select_batches_for_level(
         flags = [idx in chosen_set for idx in range(n_total)]
         return flags, f"Đủ ≥ {min_batches} đợt ở {level_label} → Lấy {min_batches} đợt gần nhất của {level_label}"
     else:
-        # Fallback: Không đủ tối thiểu 3 đợt ở mức nồng độ này -> lấy 3 đợt gần nhất chung
         flags = [idx < min_batches for idx in range(n_total)]
         return (
             flags,
@@ -161,9 +152,6 @@ def render_bias_calculator_page():
         "📋 2. Bảng tổng hợp %Bias đã chốt (Đầu vào Six Sigma)",
     ])
 
-    # ==========================================================================
-    # TAB 1: PHÂN TÍCH, ĐỀ XUẤT TỰ ĐỘNG & TÙY CHỈNH THỦ CÔNG TRÊN BẢNG
-    # ==========================================================================
     with tab_calc:
         with st.container(border=True):
             st.markdown("#### :material/tune: Bước 1: Chọn Xét nghiệm & Cấu hình quy tắc gợi ý đợt EQA")
@@ -195,12 +183,10 @@ def render_bias_calculator_page():
                 key="bias_strategy_sel",
             )
 
-            # Lọc dữ liệu của xét nghiệm đang chọn, sắp xếp đợt mới nhất lên đầu
             df_test = df_inst[df_inst["test_code"] == sel_test].copy()
             df_test = df_test.sort_values(by=["month_year", "batch_no"], ascending=[False, False]).reset_index(drop=True)
             unit_str = str(df_test["unit"].iloc[0]) if not df_test.empty else ""
 
-            # Cho phép người dùng nhập nồng độ IQC đích (tùy chọn) để phân cụm chính xác hơn
             with st.expander("⚙️ Tùy chọn nâng cao: Nhập nồng độ đích IQC (Để = 0 nếu muốn App tự động chia ngưỡng)", expanded=False):
                 t_cols = st.columns(num_levels + 1)
                 custom_targets = []
@@ -226,7 +212,6 @@ def render_bias_calculator_page():
                     key="bias_min_batches_input",
                 ))
 
-        # Thực hiện phân cụm nồng độ và đề xuất dấu tick tự động
         df_clustered, centers = _assign_concentration_levels(df_test, num_levels, custom_targets)
 
         level_rules_info = {}
@@ -242,13 +227,11 @@ def render_bias_calculator_page():
             df_clustered[col_flag] = flags
             level_rules_info[lv_code] = (centers[idx], rule_desc)
 
-        # Khởi tạo bảng tương tác cho người dùng tick/bỏ tick
         with st.container(border=True):
             st.markdown(
                 f"#### :material/check_box: Bước 2: Kiểm tra & Tick chọn các đợt EQA cho **{sel_test}** ({len(df_clustered)} đợt trong DB)"
             )
 
-            # Hiển thị giải thích quy tắc mà thuật toán vừa áp dụng cho từng mức
             info_lines = []
             for idx in range(num_levels):
                 lv_code = f"Mức {idx + 1}"
@@ -262,7 +245,6 @@ def render_bias_calculator_page():
             </div>
             """)
 
-            # Chuẩn bị DataFrame cho st.data_editor
             editor_cols = [f"use_lv{i + 1}" for i in range(num_levels)] + [
                 "month_year",
                 "batch_label",
@@ -301,7 +283,6 @@ def render_bias_calculator_page():
                 key=f"editor_bias_{sel_inst}_{sel_test}_{num_levels}_{sel_strategy}",
             )
 
-        # Bước 3: Tính toán Real-time từ các dòng đang được tick chọn trong edited_df
         with st.container(border=True):
             st.markdown("#### :material/calculate: Bước 3: Kết quả %Bias trung bình theo từng Mức nồng độ & Lưu Database")
 
@@ -386,9 +367,6 @@ def render_bias_calculator_page():
                     )
                     st.rerun()
 
-    # ==========================================================================
-    # TAB 2: DANH SÁCH %BIAS ĐÃ CHỐT CỦA CÁC XÉT NGHIỆM (SẴN SÀNG CHO SIX SIGMA)
-    # ==========================================================================
     with tab_saved:
         df_saved = get_all_bias_summaries()
         with st.container(border=True):
