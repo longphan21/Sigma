@@ -2,7 +2,7 @@ import streamlit as st
 import gspread
 
 # Đường link Google Sheets của bạn
-DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1DQIDnYgzcvmkmrlL3ohTH6SS7S19MWWVisQlT1Aq-f0/edit?gid=0#gid=0"
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1GJ-uOc8nrUrEK42PQwJhoFc1xWQmH19fbkCgIwHIUxI/edit?gid=0#gid=0"
 
 @st.cache_resource(show_spinner=False)
 def get_gsheet_client():
