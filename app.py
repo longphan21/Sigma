@@ -88,7 +88,7 @@ if page == "1. Overview":
 
             sel_month = f1.selectbox("Kỳ Tháng/Năm", month_options, key="ov_month")
             sel_inst = f2.selectbox("Thiết bị phân tích", inst_options, key="ov_inst")
-            search_kw = f3.text_input("Tìm nhanh Xét nghiệm (VD: ALT, GLU, CREA...)", key="ov_kw").strip().lower()
+            search_kw = f3.text_input("Tìm nhanh Xét nghiệm", key="ov_kw").strip().lower()
             view_mode = f4.selectbox("Chế độ hiển thị", ["Compact List", "Bảng chuẩn Y khoa"], key="ov_view_mode")
 
         # Hiển thị từng mục đợt ngoại kiểm
