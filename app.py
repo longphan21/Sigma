@@ -17,26 +17,26 @@ from database import (
     get_all_batches,
     get_results_by_batch,
     get_all_results_joined,
-    get_sigma_input_by_test,
     delete_batch,
 )
 from pdf_parser import parse_veqas_pdf
 from components import (
-    fmt_num,
     render_batch_meta_bar,
     render_eqa_results_table,
     render_overview_compact_card,
 )
+from bias_calculator import render_bias_calculator_page
 
-# 1. Khởi tạo giao diện chuẩn ui_theme.py & Database SQLite
+# 1. Khởi tạo giao diện chuẩn ui_theme.py & Database Google Sheets
 init_theme(page_title="EQA Database - Six Sigma Module")
 init_database()
 
-# 2. Thanh Menu dọc bên trái (đồng bộ 100% với thiết kế mẫu)
+# 2. Thanh Menu dọc bên trái
 MENU_ITEMS = [
     ("1. Overview", ":material/dashboard:"),
     ("2. Import EQA PDF", ":material/upload_file:"),
-    ("3. Sigma Data & History", ":material/science:"),
+    ("3. Tính %Bias (EQA)", ":material/calculate:"),
+    ("4. Quản lý Đợt EQA", ":material/folder_open:"),
 ]
 
 page = render_sidebar_menu(
@@ -65,7 +65,6 @@ if page == "1. Overview":
                 "Hãy chuyển sang mục **2. Import EQA PDF** ở thanh menu bên trái để tải lên file PDF kết quả ngoại kiểm (VEQAS) đầu tiên."
             )
     else:
-        # Khối KPI tổng quan
         total_batches = len(batches)
         total_records = len(df_all)
         pass_total = int((df_all["eval_status"] == "PASS").sum()) if not df_all.empty else 0
@@ -78,7 +77,6 @@ if page == "1. Overview":
         c3.metric("Tỷ lệ Đạt (|z| ≤ 2.0)", f"{pass_rate:.1f}%")
         c4.metric("|%Bias| trung bình", f"{mean_abs_bias:.2f}%")
 
-        # Bộ lọc nhanh
         with st.container(border=True):
             st.markdown("#### :material/filter_alt: Bộ lọc tra cứu nhanh theo Đợt & Xét nghiệm")
             f1, f2, f3, f4 = st.columns([1.3, 1.3, 1.4, 1.0])
@@ -88,10 +86,9 @@ if page == "1. Overview":
 
             sel_month = f1.selectbox("Kỳ Tháng/Năm", month_options, key="ov_month")
             sel_inst = f2.selectbox("Thiết bị phân tích", inst_options, key="ov_inst")
-            search_kw = f3.text_input("Tìm nhanh Xét nghiệm", key="ov_kw").strip().lower()
+            search_kw = f3.text_input("Tìm nhanh Xét nghiệm (VD: ALT, GLU, CREA...)", key="ov_kw").strip().lower()
             view_mode = f4.selectbox("Chế độ hiển thị", ["Compact List", "Bảng chuẩn Y khoa"], key="ov_view_mode")
 
-        # Hiển thị từng mục đợt ngoại kiểm
         shown_batches = 0
         for b in batches:
             if sel_month != "Tất cả" and b["month_year"] != sel_month:
@@ -104,22 +101,26 @@ if page == "1. Overview":
                 b_results = [
                     r for r in b_results
                     if search_kw in str(r.get("test_code", "")).lower()
-                       or search_kw in str(r.get("test_full_name", "")).lower()
+                    or search_kw in str(r.get("test_full_name", "")).lower()
                 ]
             if not b_results:
                 continue
 
             shown_batches += 1
-
-            # Gộp thông tin thành tiêu đề và đưa vào hộp đóng/mở (Expander)
-            expander_title = f"📅 {b['batch_label']} — Chương trình: {b['program_name']} ({b['program_code']}) | Máy: {b['instrument_name']} | Mã ĐV: {b['unit_code']}"
-
+            expander_title = (
+                f"📅 {b['batch_label']} — Chương trình: {b['program_name']} ({b['program_code']}) "
+                f"| Máy: {b['instrument_name']} | Mã ĐV: {b['unit_code']}"
+            )
             with st.expander(expander_title, expanded=False):
                 if view_mode == "Compact List":
                     render_overview_compact_card(b, b_results)
                 else:
                     render_batch_meta_bar(b)
                     render_eqa_results_table(b_results, max_height=360)
+
+        if shown_batches == 0:
+            render_html('<div class="search-result-pill">Không tìm thấy đợt ngoại kiểm nào khớp với điều kiện lọc.</div>')
+
 
 # ==============================================================================
 # TRANG 2: IMPORT EQA PDF - BÓC TÁCH VÀ LƯU FILE PDF NGOẠI KIỂM VÀO DATABASE
@@ -142,7 +143,6 @@ elif page == "2. Import EQA PDF":
         file_bytes = uploaded_pdf.getvalue()
         file_sig = f"{uploaded_pdf.name}_{len(file_bytes)}"
 
-        # Chỉ bóc tách lại khi người dùng tải file mới
         if st.session_state.get("last_parsed_sig") != file_sig:
             with st.spinner("Đang bóc tách dữ liệu từ file PDF..."):
                 parsed_data = parse_veqas_pdf(file_bytes, filename=uploaded_pdf.name)
@@ -174,7 +174,6 @@ elif page == "2. Import EQA PDF":
                     placeholder="VD: Ngoại kiểm Sinh hóa đợt 1 tháng 01/2026 - Máy Abbott Alinity c...",
                 )
 
-                # Kiểm tra xem đợt này đã có trong DB chưa
                 existing_id = check_batch_exists(
                     program_code=prog_code_in,
                     batch_no=batch_no_in,
@@ -205,7 +204,7 @@ elif page == "2. Import EQA PDF":
                 """)
                 render_eqa_results_table(results, max_height=380)
 
-                btn_col1, btn_col2 = st.columns([1.2, 3.8])
+                btn_col1, _ = st.columns([1.2, 3.8])
                 with btn_col1:
                     if st.button(":material/save: Lưu vào Database", type="primary", use_container_width=True):
                         if not results:
@@ -245,12 +244,19 @@ elif page == "2. Import EQA PDF":
 
 
 # ==============================================================================
-# TRANG 3: SIGMA DATA & HISTORY - QUẢN LÝ TỪNG MỤC & TRÍCH XUẤT CHO SIX SIGMA
+# TRANG 3: TÍNH %BIAS THEO MỨC NỒNG ĐỘ (ĐỀ XUẤT TỰ ĐỘNG + TICK THỦ CÔNG)
 # ==============================================================================
-elif page == "3. Sigma Data & History":
+elif page == "3. Tính %Bias (EQA)":
+    render_bias_calculator_page()
+
+
+# ==============================================================================
+# TRANG 4: QUẢN LÝ & XUẤT DỮ LIỆU TỪNG ĐỢT EQA
+# ==============================================================================
+elif page == "4. Quản lý Đợt EQA":
     render_page_banner(
-        "Quản lý Mục Ngoại kiểm & Dữ liệu Đầu vào Six Sigma",
-        "Xem chi tiết từng mục ngoại kiểm đã lưu, xuất dữ liệu hoặc lấy giá trị %Bias, SD, %CV, σp cho bước tính Six Sigma.",
+        "Quản lý Mục Ngoại kiểm & Xuất File",
+        "Xem chi tiết từng mục ngoại kiểm đã lưu, xuất file CSV/Excel hoặc xóa đợt nhập nhầm.",
     )
 
     batches = get_all_batches()
@@ -259,102 +265,48 @@ elif page == "3. Sigma Data & History":
             st.markdown("#### :material/storage: Database hiện đang trống")
             st.write("Vui lòng import file PDF ngoại kiểm tại mục **2. Import EQA PDF** trước.")
     else:
-        tab1, tab2 = st.tabs(["📂 Quản lý theo từng Đợt (Mục EQA)", "📐 Tra cứu chuỗi %Bias cho Six Sigma"])
+        with st.container(border=True):
+            st.markdown("#### :material/folder_open: Chọn Mục Ngoại kiểm (Đợt / Tháng-Năm)")
+            batch_map = {
+                f"[#{b['id']}] {b['batch_label']} | {b['program_code']} - {b['instrument_name']} ({b['total_tests']} XN)": b
+                for b in batches
+            }
+            sel_label = st.selectbox("Danh sách các mục EQA trong Database", list(batch_map.keys()), key="hist_sel_batch")
+            sel_batch = batch_map[sel_label]
+            sel_results = get_results_by_batch(sel_batch["id"])
 
-        with tab1:
-            with st.container(border=True):
-                st.markdown("#### :material/folder_open: Chọn Mục Ngoại kiểm (Đợt / Tháng-Năm)")
-                batch_map = {
-                    f"[#{b['id']}] {b['batch_label']} | {b['program_code']} - {b['instrument_name']} ({b['total_tests']} XN)": b
-                    for b in batches
-                }
-                sel_label = st.selectbox("Danh sách các mục EQA trong Database", list(batch_map.keys()), key="hist_sel_batch")
-                sel_batch = batch_map[sel_label]
-                sel_results = get_results_by_batch(sel_batch["id"])
+            render_batch_meta_bar(sel_batch)
+            render_eqa_results_table(sel_results, max_height=400)
 
-                render_batch_meta_bar(sel_batch)
-                render_eqa_results_table(sel_results, max_height=400)
+            df_export = pd.DataFrame(sel_results)
+            act1, act2, act3 = st.columns([1.2, 1.2, 2.6])
 
-                # Xuất file CSV / Excel hoặc Xóa đợt
-                df_export = pd.DataFrame(sel_results)
-                act1, act2, act3 = st.columns([1.2, 1.2, 2.6])
+            csv_bytes = df_export.to_csv(index=False).encode("utf-8-sig")
+            act1.download_button(
+                ":material/download: Xuất CSV đợt này",
+                data=csv_bytes,
+                file_name=f"EQA_{sel_batch['program_code']}_Dot_{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
-                csv_bytes = df_export.to_csv(index=False).encode("utf-8-sig")
-                act1.download_button(
-                    ":material/download: Xuất CSV đợt này",
-                    data=csv_bytes,
-                    file_name=f"EQA_{sel_batch['program_code']}_Dot_{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+            excel_buf = io.BytesIO()
+            with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                df_export.to_excel(writer, index=False, sheet_name="EQA_Results")
+            act2.download_button(
+                ":material/table_view: Xuất Excel (.xlsx)",
+                data=excel_buf.getvalue(),
+                file_name=f"EQA_{sel_batch['program_code']}_Dot_{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
-                excel_buf = io.BytesIO()
-                with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-                    df_export.to_excel(writer, index=False, sheet_name="EQA_Results")
-                act2.download_button(
-                    ":material/table_view: Xuất Excel (.xlsx)",
-                    data=excel_buf.getvalue(),
-                    file_name=f"EQA_{sel_batch['program_code']}_Dot_{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-                with act3:
-                    if st.button(":material/delete: Xóa đợt ngoại kiểm này", type="secondary"):
-                        delete_batch(sel_batch["id"])
-                        queue_popup(
-                            "Đã xóa mục ngoại kiểm!",
-                            f"Mục '{sel_batch['batch_label']}' đã được xóa khỏi Database.",
-                            "error",
-                        )
-                        st.rerun()
-
-        with tab2:
-            df_all = get_all_results_joined()
-            with st.container(border=True):
-                st.markdown("#### :material/calculate: Trích xuất thông số Ngoại kiểm theo Xét nghiệm để tính Six Sigma")
-                all_tests = sorted(df_all["test_code"].unique().tolist())
-                all_insts = ["Tất cả"] + sorted(df_all["instrument_name"].dropna().unique().tolist())
-
-                sc1, sc2 = st.columns(2)
-                chosen_test = sc1.selectbox("Chọn Thông số Xét nghiệm", all_tests, key="sigma_test_sel")
-                chosen_inst = sc2.selectbox("Chọn Máy xét nghiệm", all_insts, key="sigma_inst_sel")
-
-                df_test = get_sigma_input_by_test(
-                    test_code=chosen_test,
-                    instrument_name=None if chosen_inst == "Tất cả" else chosen_inst,
-                )
-
-                if not df_test.empty:
-                    avg_bias_pct = df_test["bias_pct"].abs().mean()
-                    rms_bias_pct = (df_test["bias_pct"].pow(2).mean()) ** 0.5
-                    latest_row = df_test.iloc[0]
-
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric(f"%Bias đợt mới nhất ({latest_row['month_year']})", f"{latest_row['bias_pct']:+.2f}%")
-                    m2.metric("|%Bias| trung bình các đợt", f"{avg_bias_pct:.2f}%")
-                    m3.metric("RMS %Bias (Căn bậc 2 TB bình phương)", f"{rms_bias_pct:.2f}%")
-                    m4.metric("z-score đợt mới nhất", f"{latest_row['z_score']:+.2f}")
-
-                    st.dataframe(
-                        df_test[[
-                            "batch_label", "month_year", "instrument_name", "test_code", "unit",
-                            "lab_result", "assigned_value", "bias_abs", "bias_pct", "sigma_p", "z_score", "peer_sd", "peer_cv"
-                        ]].rename(columns={
-                            "batch_label": "Mục / Đợt EQA",
-                            "month_year": "Tháng/Năm",
-                            "instrument_name": "Thiết bị",
-                            "test_code": "Mã XN",
-                            "unit": "Đơn vị",
-                            "lab_result": "KQ Đơn vị (x)",
-                            "assigned_value": "GT Ấn định (x_pt)",
-                            "bias_abs": "Bias tuyệt đối",
-                            "bias_pct": "%Bias",
-                            "sigma_p": "σp",
-                            "z_score": "z-score",
-                            "peer_sd": "Peer SD",
-                            "peer_cv": "Peer %CV",
-                        }),
-                        use_container_width=True,
-                        hide_index=True,
+            with act3:
+                if st.button(":material/delete: Xóa đợt ngoại kiểm này", type="secondary"):
+                    delete_batch(sel_batch["id"])
+                    queue_popup(
+                        "Đã xóa mục ngoại kiểm!",
+                        f"Mục '{sel_batch['batch_label']}' đã được xóa khỏi Database.",
+                        "error",
                     )
+                    st.rerun()
