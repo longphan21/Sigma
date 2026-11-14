@@ -277,14 +277,21 @@ def get_all_bias_summaries() -> pd.DataFrame:
     return df.sort_values(by=["instrument_name", "test_code", "level_no"], ascending=[True, True, True])
 
 
-def delete_bias_summary_by_test(test_code: str):
-    """Xóa kết quả %Bias đã chốt của một xét nghiệm."""
+def delete_bias_summary_by_test(test_code: str, instrument_name: Optional[str] = None):
+    """Xóa kết quả %Bias đã chốt của một xét nghiệm (có thể lọc kèm tên máy)."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
     all_vals = ws.get_all_values()
     if len(all_vals) > 1:
         headers = all_vals[0]
+        inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 1
         test_idx = headers.index("test_code") if "test_code" in headers else 2
         for i in range(len(all_vals) - 1, 0, -1):
-            if str(all_vals[i][test_idx]).strip().upper() == test_code.strip().upper():
+            match_test = str(all_vals[i][test_idx]).strip().upper() == test_code.strip().upper()
+            match_inst = (
+                True
+                if not instrument_name
+                else str(all_vals[i][inst_idx]).strip().lower() == instrument_name.strip().lower()
+            )
+            if match_test and match_inst:
                 ws.delete_rows(i + 1)
     clear_db_cache()
