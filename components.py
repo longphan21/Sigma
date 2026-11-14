@@ -42,7 +42,7 @@ def render_batch_meta_bar(batch: Dict[str, Any]):
 def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 340):
     """
     Hiển thị bảng kết quả ngoại kiểm chuẩn y khoa (.lab-table-wrapper & .lab-table)
-    với đầy đủ các thông số phục vụ tính Six Sigma: Kết quả ĐV, Giá trị ấn định, Bias, %Bias, σp, z-score, Peer SD & %CV.
+    với công thức cố định BIAS % = (|KQ đơn vị - GT ấn định| * 100) / GT ấn định.
     """
     if not results:
         render_html('<div class="search-result-pill">Không có dữ liệu xét nghiệm phù hợp.</div>')
@@ -51,10 +51,21 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
     rows_html = []
     for idx, r in enumerate(results, start=1):
         badge_html = map_eval_badge(r.get("eval_status"), r.get("z_score"))
+        lab_v = r.get("lab_result")
+        asg_v = r.get("assigned_value")
         bias_pct_val = r.get("bias_pct")
-        bias_pct_str = f"{bias_pct_val:+.2f}%" if bias_pct_val is not None else "-"
+
+        if lab_v is not None and asg_v not in (None, 0):
+            try:
+                exact_b = abs(float(lab_v) - float(asg_v)) * 100.0 / abs(float(asg_v))
+                bias_pct_str = f"{exact_b:.2f}%"
+            except Exception:
+                bias_pct_str = f"{abs(float(bias_pct_val)):.2f}%" if bias_pct_val is not None else "-"
+        else:
+            bias_pct_str = f"{abs(float(bias_pct_val)):.2f}%" if bias_pct_val is not None else "-"
+
         z_val = r.get("z_score")
-        z_str = f"{z_val:+.2f}" if z_val is not None else "-"
+        z_str = f"{float(z_val):+.2f}" if z_val is not None else "-"
 
         rows_html.append(f"""
         <tr>
@@ -62,8 +73,8 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
             <td class="text-left"><b>{r.get('test_code', '')}</b></td>
             <td class="text-left">{r.get('test_full_name', '')}</td>
             <td class="text-center">{r.get('unit', '')}</td>
-            <td class="text-right"><b>{fmt_num(r.get('lab_result'), 3)}</b></td>
-            <td class="text-right">{fmt_num(r.get('assigned_value'), 3)}</td>
+            <td class="text-right"><b>{fmt_num(lab_v, 3)}</b></td>
+            <td class="text-right">{fmt_num(asg_v, 3)}</td>
             <td class="text-right">{fmt_num(r.get('bias_abs'), 3)}</td>
             <td class="text-right"><b>{bias_pct_str}</b></td>
             <td class="text-right">{fmt_num(r.get('sigma_p'), 3)}</td>
@@ -83,10 +94,10 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
                     <th class="text-left">Mã XN</th>
                     <th class="text-left">Tên thông số xét nghiệm</th>
                     <th class="text-center">Đơn vị</th>
-                    <th class="text-right">KQ Đơn vị (x)</th>
-                    <th class="text-right">GT Ấn định (x_pt)</th>
-                    <th class="text-right">Bias tuyệt đối</th>
-                    <th class="text-right">%Bias (EQA)</th>
+                    <th class="text-right">KQ Đơn vị (D)</th>
+                    <th class="text-right">GT Ấn định (E)</th>
+                    <th class="text-right">|D - E|</th>
+                    <th class="text-right">BIAS %</th>
                     <th class="text-right">σp</th>
                     <th class="text-right">z-score</th>
                     <th class="text-right">SD Nhóm máy</th>
@@ -116,10 +127,21 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
         code = r.get("test_code", "XN")
         avatar_txt = code[:2].upper()
         badge_html = map_eval_badge(r.get("eval_status"), r.get("z_score"))
+        lab_v = r.get("lab_result")
+        asg_v = r.get("assigned_value")
         bias_pct = r.get("bias_pct")
-        bias_str = f"{bias_pct:+.2f}%" if bias_pct is not None else "-"
+
+        if lab_v is not None and asg_v not in (None, 0):
+            try:
+                exact_b = abs(float(lab_v) - float(asg_v)) * 100.0 / abs(float(asg_v))
+                bias_str = f"{exact_b:.2f}%"
+            except Exception:
+                bias_str = f"{abs(float(bias_pct)):.2f}%" if bias_pct is not None else "-"
+        else:
+            bias_str = f"{abs(float(bias_pct)):.2f}%" if bias_pct is not None else "-"
+
         z_val = r.get("z_score")
-        z_str = f"z = {z_val:+.2f}" if z_val is not None else "-"
+        z_str = f"z = {float(z_val):+.2f}" if z_val is not None else "-"
 
         items_html.append(f"""
         <details class="overview-item">
@@ -128,17 +150,17 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                     <span class="item-avatar">{avatar_txt}</span>
                     <span>{code} — {r.get('test_full_name', '')} <small style="color:#64748B;">({r.get('unit', '')})</small></span>
                 </div>
-                <div class="item-lot-cell">KQ: {fmt_num(r.get('lab_result'), 3)} / {fmt_num(r.get('assigned_value'), 3)}</div>
-                <div class="item-date-cell">%Bias: <b>{bias_str}</b> | {z_str}</div>
+                <div class="item-lot-cell">KQ: {fmt_num(lab_v, 3)} / {fmt_num(asg_v, 3)}</div>
+                <div class="item-date-cell">BIAS%: <b>{bias_str}</b> | {z_str}</div>
                 <div>{badge_html}</div>
                 <div class="item-action-cell">Chi tiết ▾</div>
             </summary>
             <div class="overview-subbox">
                 <div class="history-meta-bar" style="margin-bottom:6px;">
-                    <span><b>Kết quả đơn vị (x):</b> <code>{fmt_num(r.get('lab_result'), 3)} {r.get('unit', '')}</code></span>
-                    <span><b>Giá trị ấn định (x_pt):</b> <code>{fmt_num(r.get('assigned_value'), 3)} {r.get('unit', '')}</code></span>
-                    <span><b>Bias tuyệt đối:</b> <code>{fmt_num(r.get('bias_abs'), 4)}</code></span>
-                    <span><b>%Bias (dùng tính Sigma):</b> <code>{bias_str}</code></span>
+                    <span><b>Kết quả đơn vị (D):</b> <code>{fmt_num(lab_v, 3)} {r.get('unit', '')}</code></span>
+                    <span><b>Giá trị ấn định (E):</b> <code>{fmt_num(asg_v, 3)} {r.get('unit', '')}</code></span>
+                    <span><b>|D - E|:</b> <code>{fmt_num(r.get('bias_abs'), 4)}</code></span>
+                    <span><b>BIAS % = |D-E|*100/E:</b> <code>{bias_str}</code></span>
                     <span><b>σp:</b> <code>{fmt_num(r.get('sigma_p'), 3)}</code></span>
                     <span><b>z-score:</b> <code>{z_str}</code></span>
                 </div>
@@ -195,7 +217,7 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
         <div class="overview-group-header">
             <div class="overview-mach-title">🔬 {batch.get('instrument_name', 'Thiết bị')} — {batch.get('batch_label', '')} ({len(results)} XN)</div>
             <div>KQ Đơn vị / Ấn định</div>
-            <div>%Bias & z-score</div>
+            <div>BIAS % & z-score</div>
             <div>Trạng thái</div>
             <div style="text-align:right;">Thao tác</div>
         </div>

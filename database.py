@@ -1,3 +1,5 @@
+import time
+import gspread
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -23,38 +25,100 @@ BIAS_SUMMARY_HEADERS = [
 ]
 
 
-def get_ws(name: str, headers: List[str]):
-    """Lấy Worksheet trên Google Sheets, nếu chưa có thì tự động tạo kèm dòng Header."""
-    doc = get_spreadsheet()
+def _retry_gspread(func, *args, **kwargs):
+    """Tự động thử lại tối đa 4 lần nếu Google Sheets API bị quá tải tạm thời (429 / 500 / 503)."""
+    delays = [1.2, 2.5, 4.5]
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            err_str = str(e)
+            if status_code in (429, 500, 502, 503) or "429" in err_str or "Quota" in err_str or "503" in err_str:
+                time.sleep(delay)
+            else:
+                raise
+    return func(*args, **kwargs)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_cached_ws(name: str, headers_tuple: tuple):
+    """Lấy và giữ kết nối Worksheet trong bộ nhớ đệm, tự động tạo mới với 5000 dòng nếu chưa có."""
+    doc = _retry_gspread(get_spreadsheet)
     try:
-        return doc.worksheet(name)
+        ws = _retry_gspread(doc.worksheet, name)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = _retry_gspread(doc.add_worksheet, title=name, rows=5000, cols=max(len(headers_tuple), 20))
+        _retry_gspread(ws.append_row, list(headers_tuple))
+    return ws
+
+
+def get_ws(name: str, headers: List[str]):
+    """Lấy Worksheet trên Google Sheets an toàn, không gọi lại metadata nhiều lần."""
+    return _get_cached_ws(name, tuple(headers))
+
+
+def _ensure_ws_capacity(ws, additional_rows: int):
+    """Tự động mở rộng số dòng của Sheet nếu tổng dữ liệu vượt quá giới hạn dòng hiện tại."""
+    try:
+        current_rows = ws.row_count
+        if current_rows < additional_rows + 500:
+            _retry_gspread(ws.add_rows, max(2000, additional_rows + 500))
     except Exception:
-        ws = doc.add_worksheet(title=name, rows=200, cols=len(headers))
-        ws.append_row(headers)
-        return ws
+        pass
+
+
+def _values_to_records(all_values: List[List[Any]], expected_headers: List[str]) -> List[Dict[str, Any]]:
+    """Chuyển mảng 2 chiều từ get_all_values() sang danh sách Dict an toàn, tránh lỗi tràn/lệch cột của get_all_records()."""
+    if not all_values or len(all_values) < 2:
+        return []
+    raw_headers = [str(h).strip() for h in all_values[0]]
+    headers = raw_headers if any(raw_headers) else expected_headers
+    records: List[Dict[str, Any]] = []
+    for row in all_values[1:]:
+        if not any(str(cell).strip() for cell in row):
+            continue
+        rec: Dict[str, Any] = {}
+        for idx, h in enumerate(headers):
+            if not h:
+                continue
+            rec[h] = row[idx] if idx < len(row) else ""
+        records.append(rec)
+    return records
 
 
 def clear_db_cache():
-    """Xóa bộ nhớ đệm mỗi khi có thao tác Lưu hoặc Xóa dữ liệu."""
+    """Xóa bộ nhớ đệm dữ liệu mỗi khi có thao tác Lưu hoặc Xóa."""
     st.cache_data.clear()
 
 
+@st.cache_resource(show_spinner=False)
 def init_database():
-    """Khởi tạo 3 trang tính trên Google Sheets nếu chưa tồn tại."""
+    """Khởi tạo 3 trang tính trên Google Sheets đúng 1 lần khi mở ứng dụng."""
     get_ws("eqa_batches", BATCHES_HEADERS)
     get_ws("eqa_results", RESULTS_HEADERS)
     get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
+    return True
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_all_batches() -> List[Dict[str, Any]]:
     ws = get_ws("eqa_batches", BATCHES_HEADERS)
-    records = ws.get_all_records()
+    all_vals = _retry_gspread(ws.get_all_values)
+    records = _values_to_records(all_vals, BATCHES_HEADERS)
     records.sort(
         key=lambda x: (str(x.get("month_year", "")), str(x.get("batch_no", "")), int(x.get("id", 0) or 0)),
         reverse=True,
     )
     return records
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_all_results_raw() -> List[Dict[str, Any]]:
+    """Đọc toàn bộ bảng eqa_results đúng 1 lần vào bộ nhớ đệm, dùng chung cho mọi trang."""
+    ws = get_ws("eqa_results", RESULTS_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    return _values_to_records(all_vals, RESULTS_HEADERS)
 
 
 def check_batch_exists(program_code: str, batch_no: str, month_year: str, instrument_name: str, sample_code: str = "") -> Optional[int]:
@@ -67,7 +131,7 @@ def check_batch_exists(program_code: str, batch_no: str, month_year: str, instru
             and str(r.get("instrument_name", "")).strip() == instrument_name.strip()
         ):
             if not sample_code or str(r.get("sample_code", "")).strip() == sample_code.strip():
-                return int(r["id"]) if r.get("id") else None
+                return int(r["id"]) if str(r.get("id", "")).isdigit() else None
     return None
 
 
@@ -79,8 +143,8 @@ def save_eqa_batch(metadata: Dict[str, Any], results: List[Dict[str, Any]], over
     if overwrite_batch_id is not None:
         delete_batch(overwrite_batch_id)
 
-    batches_records = ws_batches.get_all_records()
-    batch_id = max([int(r["id"]) for r in batches_records if str(r.get("id")).isdigit()], default=0) + 1
+    batches_records = get_all_batches()
+    batch_id = max([int(r["id"]) for r in batches_records if str(r.get("id", "")).isdigit()], default=0) + 1
 
     total_tests = len(results)
     pass_count = sum(1 for r in results if r.get("eval_status") == "PASS")
@@ -95,10 +159,10 @@ def save_eqa_batch(metadata: Dict[str, Any], results: List[Dict[str, Any]], over
         metadata.get("instrument_name", ""), metadata.get("sample_code", ""), metadata.get("provider_name", "VEQAS - TT Kiểm chuẩn XN TP.HCM"),
         metadata.get("source_filename", ""), total_tests, pass_count, warn_count, fail_count, now_str, metadata.get("notes", "")
     ]
-    ws_batches.append_row(batch_row)
+    _retry_gspread(ws_batches.append_row, batch_row)
 
-    results_records = ws_results.get_all_records()
-    res_id = max([int(r["id"]) for r in results_records if str(r.get("id")).isdigit()], default=0)
+    results_records = _get_all_results_raw()
+    res_id = max([int(r["id"]) for r in results_records if str(r.get("id", "")).isdigit()], default=0)
 
     rows_to_append = []
     for item in results:
@@ -116,7 +180,8 @@ def save_eqa_batch(metadata: Dict[str, Any], results: List[Dict[str, Any]], over
         rows_to_append.append(row)
 
     if rows_to_append:
-        ws_results.append_rows(rows_to_append)
+        _ensure_ws_capacity(ws_results, len(results_records) + len(rows_to_append) + 10)
+        _retry_gspread(ws_results.append_rows, rows_to_append)
 
     clear_db_cache()
     return batch_id
@@ -129,11 +194,10 @@ def get_batch_by_id(batch_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_results_by_batch(batch_id: int) -> List[Dict[str, Any]]:
-    ws = get_ws("eqa_results", RESULTS_HEADERS)
-    records = ws.get_all_records()
-    filtered = [r for r in records if str(r.get("batch_id", "")) == str(batch_id)]
+    records = _get_all_results_raw()
+    filtered = [dict(r) for r in records if str(r.get("batch_id", "")) == str(batch_id)]
 
     for r in filtered:
         for k, v in list(r.items()):
@@ -144,14 +208,14 @@ def get_results_by_batch(batch_id: int) -> List[Dict[str, Any]]:
                     r[k] = float(v)
                 except Exception:
                     pass
-    filtered.sort(key=lambda x: (x.get("page_no", 999), x.get("id", 0)))
+    filtered.sort(key=lambda x: (int(x.get("page_no") or 999), int(x.get("id") or 0)))
     return filtered
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_all_results_joined() -> pd.DataFrame:
-    batches = get_ws("eqa_batches", BATCHES_HEADERS).get_all_records()
-    results = get_ws("eqa_results", RESULTS_HEADERS).get_all_records()
+    batches = get_all_batches()
+    results = _get_all_results_raw()
 
     df_b = pd.DataFrame(batches)
     df_r = pd.DataFrame(results)
@@ -161,6 +225,9 @@ def get_all_results_joined() -> pd.DataFrame:
 
     df_b = df_b.rename(columns={"id": "batch_id"})
     df_r = df_r.rename(columns={"id": "result_id"})
+
+    df_b["batch_id"] = df_b["batch_id"].astype(str)
+    df_r["batch_id"] = df_r["batch_id"].astype(str)
 
     df = pd.merge(df_r, df_b, on="batch_id", how="inner")
 
@@ -188,25 +255,30 @@ def delete_batch(batch_id: int) -> bool:
     ws_b = get_ws("eqa_batches", BATCHES_HEADERS)
     ws_r = get_ws("eqa_results", RESULTS_HEADERS)
 
-    b_records = ws_b.get_all_values()
+    b_records = _retry_gspread(ws_b.get_all_values)
     b_deleted = False
     if b_records:
         id_idx = b_records[0].index("id") if "id" in b_records[0] else 0
         for i in range(len(b_records) - 1, 0, -1):
             if str(b_records[i][id_idx]) == str(batch_id):
-                ws_b.delete_rows(i + 1)
+                _retry_gspread(ws_b.delete_rows, i + 1)
                 b_deleted = True
                 break
 
-    r_records = ws_r.get_all_values()
+    r_records = _retry_gspread(ws_r.get_all_values)
     if r_records:
         r_batch_id_idx = r_records[0].index("batch_id") if "batch_id" in r_records[0] else 1
-        rows_to_delete = []
-        for i in range(len(r_records) - 1, 0, -1):
-            if str(r_records[i][r_batch_id_idx]) == str(batch_id):
-                rows_to_delete.append(i + 1)
-        for row_idx in rows_to_delete:
-            ws_r.delete_rows(row_idx)
+        rows_to_delete = [
+            i + 1 for i in range(len(r_records) - 1, 0, -1)
+            if str(r_records[i][r_batch_id_idx]) == str(batch_id)
+        ]
+        if rows_to_delete:
+            min_r, max_r = min(rows_to_delete), max(rows_to_delete)
+            if max_r - min_r + 1 == len(rows_to_delete):
+                _retry_gspread(ws_r.delete_rows, min_r, max_r)
+            else:
+                for row_idx in rows_to_delete:
+                    _retry_gspread(ws_r.delete_rows, row_idx)
 
     clear_db_cache()
     return b_deleted
@@ -218,22 +290,28 @@ def delete_batch(batch_id: int) -> bool:
 def save_bias_summary_records(instrument_name: str, test_code: str, level_records: List[Dict[str, Any]]):
     """Lưu (hoặc ghi đè) kết quả %Bias đã chốt của 1 xét nghiệm theo từng mức nồng độ."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
-    all_vals = ws.get_all_values()
+    all_vals = _retry_gspread(ws.get_all_values)
 
-    # Xóa các dòng cũ của cùng (instrument_name, test_code) nếu đã tồn tại
     if len(all_vals) > 1:
         headers = all_vals[0]
         inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 1
         test_idx = headers.index("test_code") if "test_code" in headers else 2
-        for i in range(len(all_vals) - 1, 0, -1):
-            if (
-                str(all_vals[i][inst_idx]).strip().lower() == instrument_name.strip().lower()
-                and str(all_vals[i][test_idx]).strip().upper() == test_code.strip().upper()
-            ):
-                ws.delete_rows(i + 1)
+        rows_to_del = [
+            i + 1 for i in range(len(all_vals) - 1, 0, -1)
+            if str(all_vals[i][inst_idx]).strip().lower() == instrument_name.strip().lower()
+            and str(all_vals[i][test_idx]).strip().upper() == test_code.strip().upper()
+        ]
+        if rows_to_del:
+            min_r, max_r = min(rows_to_del), max(rows_to_del)
+            if max_r - min_r + 1 == len(rows_to_del):
+                _retry_gspread(ws.delete_rows, min_r, max_r)
+            else:
+                for r_idx in rows_to_del:
+                    _retry_gspread(ws.delete_rows, r_idx)
 
-    existing = ws.get_all_records()
-    next_id = max([int(r["id"]) for r in existing if str(r.get("id")).isdigit()], default=0)
+    after_vals = _retry_gspread(ws.get_all_values)
+    existing = _values_to_records(after_vals, BIAS_SUMMARY_HEADERS)
+    next_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     rows_to_add = []
@@ -245,7 +323,7 @@ def save_bias_summary_records(instrument_name: str, test_code: str, level_record
             rec.get("test_code", test_code),
             rec.get("unit", ""),
             rec.get("level_no", 1),
-            rec.get("level_name", "Mức 1"),
+            rec.get("level_name", "Mức 1 (LOW)"),
             rec.get("mean_conc", 0.0),
             rec.get("n_batches", 0),
             rec.get("selected_batches", ""),
@@ -253,24 +331,26 @@ def save_bias_summary_records(instrument_name: str, test_code: str, level_record
             rec.get("mean_signed_bias_pct", 0.0),
             rec.get("rms_bias_pct", 0.0),
             rec.get("chosen_bias_pct", 0.0),
-            rec.get("formula_type", "mean_abs_bias"),
+            rec.get("formula_type", "AVERAGE(|D-E|*100/E)"),
             now_str,
         ])
 
     if rows_to_add:
-        ws.append_rows(rows_to_add)
+        _ensure_ws_capacity(ws, len(existing) + len(rows_to_add) + 10)
+        _retry_gspread(ws.append_rows, rows_to_add)
     clear_db_cache()
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_all_bias_summaries() -> pd.DataFrame:
     """Lấy toàn bộ danh sách %Bias đã chốt của các xét nghiệm."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
-    records = ws.get_all_records()
+    all_vals = _retry_gspread(ws.get_all_values)
+    records = _values_to_records(all_vals, BIAS_SUMMARY_HEADERS)
     if not records:
         return pd.DataFrame()
     df = pd.DataFrame(records)
-    num_cols = ["mean_conc", "n_batches", "mean_abs_bias_pct", "mean_signed_bias_pct", "rms_bias_pct", "chosen_bias_pct"]
+    num_cols = ["level_no", "mean_conc", "n_batches", "mean_abs_bias_pct", "mean_signed_bias_pct", "rms_bias_pct", "chosen_bias_pct"]
     for c in num_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -280,7 +360,7 @@ def get_all_bias_summaries() -> pd.DataFrame:
 def delete_bias_summary_by_test(test_code: str, instrument_name: Optional[str] = None):
     """Xóa kết quả %Bias đã chốt của một xét nghiệm (có thể lọc kèm tên máy)."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
-    all_vals = ws.get_all_values()
+    all_vals = _retry_gspread(ws.get_all_values)
     if len(all_vals) > 1:
         headers = all_vals[0]
         inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 1
@@ -293,5 +373,5 @@ def delete_bias_summary_by_test(test_code: str, instrument_name: Optional[str] =
                 else str(all_vals[i][inst_idx]).strip().lower() == instrument_name.strip().lower()
             )
             if match_test and match_inst:
-                ws.delete_rows(i + 1)
+                _retry_gspread(ws.delete_rows, i + 1)
     clear_db_cache()

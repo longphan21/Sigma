@@ -52,7 +52,7 @@ page = render_sidebar_menu(
 if page == "1. Overview":
     render_page_banner(
         "Tổng quan Cơ sở dữ liệu Ngoại kiểm (EQA)",
-        "Quản lý kết quả ngoại kiểm theo từng đợt (Tháng/Năm) để trích xuất %Bias, SD, %CV và σp phục vụ tính toán Six Sigma.",
+        "Quản lý kết quả ngoại kiểm theo từng đợt (Tháng/Năm) và tính BIAS % = (|KQ đơn vị - GT ấn định| * 100) / GT ấn định.",
     )
 
     batches = get_all_batches()
@@ -75,7 +75,7 @@ if page == "1. Overview":
         c1.metric("Tổng số đợt EQA", f"{total_batches} đợt")
         c2.metric("Tổng số kết quả XN", f"{total_records} XN")
         c3.metric("Tỷ lệ Đạt (|z| ≤ 2.0)", f"{pass_rate:.1f}%")
-        c4.metric("|%Bias| trung bình", f"{mean_abs_bias:.2f}%")
+        c4.metric("BIAS % trung bình", f"{mean_abs_bias:.2f}%")
 
         with st.container(border=True):
             st.markdown("#### :material/filter_alt: Bộ lọc tra cứu nhanh theo Đợt & Xét nghiệm")
@@ -244,7 +244,7 @@ elif page == "2. Import EQA PDF":
 
 
 # ==============================================================================
-# TRANG 3: TÍNH %BIAS THEO MỨC NỒNG ĐỘ (ĐỀ XUẤT TỰ ĐỘNG + TICK THỦ CÔNG)
+# TRANG 3: TÍNH %BIAS THEO MỨC NỒNG ĐỘ (TỰ CHỌN THÁNG)
 # ==============================================================================
 elif page == "3. Tính %Bias (EQA)":
     render_bias_calculator_page()
