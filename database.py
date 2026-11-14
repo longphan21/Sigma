@@ -27,7 +27,7 @@ BIAS_SUMMARY_HEADERS = [
 
 
 def normalize_test_info(test_code: str, test_full_name: str = "") -> Tuple[str, str]:
-    """Đồng nhất GOT -> AST và GPT -> ALT cho cả dữ liệu mới và dữ liệu đã lưu trong Google Sheets."""
+    """Unify GOT -> AST and GPT -> ALT across both new and existing records."""
     c_up = str(test_code or "").strip().upper()
     f_up = str(test_full_name or "").strip().upper()
     if c_up in ("GPT", "ALT", "ALAT") or "ALT (GPT)" in f_up or "ALANINE AMINOTRANSFERASE" in f_up:
@@ -38,7 +38,7 @@ def normalize_test_info(test_code: str, test_full_name: str = "") -> Tuple[str, 
 
 
 def parse_ym_tuple(ym_str: Any) -> Tuple[int, int]:
-    """Chuyển chuỗi kỳ 'MM/YYYY' thành tuple (YYYY, MM) để sắp xếp và lọc đúng thứ tự thời gian qua các năm."""
+    """Convert 'MM/YYYY' into (YYYY, MM) for chronological sorting and filtering."""
     s = str(ym_str or "").strip()
     m = re.search(r"(\d{1,2})[-/](\d{4})", s)
     if m:
@@ -50,22 +50,22 @@ def parse_ym_tuple(ym_str: Any) -> Tuple[int, int]:
 
 
 def _normalize_quarter_str(raw_q: Any, updated_at: Any = "") -> str:
-    """Chuẩn hóa nhãn Quý (VD: 'Quý 1/2026'). Nếu bản ghi cũ chưa ghi Quý thì tự suy luận từ ngày lưu."""
+    """Normalize quarter label to 'Q1/2026' format (compatible with 'Quý 1/2026')."""
     s = str(raw_q or "").strip()
-    if s.startswith("Quý "):
-        return s
+    m_q = re.match(r"^(?:Quý|Quy|Q)\s*([1-4])\s*/\s*(\d{4})$", s, re.IGNORECASE)
+    if m_q:
+        return f"Q{m_q.group(1)}/{m_q.group(2)}"
     m = re.search(r"(20\d{2})-(\d{2})", str(updated_at or ""))
     if m:
         yr = int(m.group(1))
         mo = int(m.group(2))
         q = (mo - 1) // 3 + 1
-        return f"Quý {q}/{yr}"
+        return f"Q{q}/{yr}"
     now = datetime.now()
-    return f"Quý {(now.month - 1) // 3 + 1}/{now.year}"
+    return f"Q{(now.month - 1) // 3 + 1}/{now.year}"
 
 
 def _retry_gspread(func, *args, **kwargs):
-    """Tự động thử lại tối đa 4 lần nếu Google Sheets API bị quá tải tạm thời (429 / 500 / 503)."""
     delays = [1.2, 2.5, 4.5]
     for delay in delays:
         try:
@@ -82,7 +82,6 @@ def _retry_gspread(func, *args, **kwargs):
 
 @st.cache_resource(show_spinner=False)
 def _get_cached_ws(name: str, headers_tuple: tuple):
-    """Lấy và giữ kết nối Worksheet trong bộ nhớ đệm, tự động tạo mới với 5000 dòng nếu chưa có."""
     doc = _retry_gspread(get_spreadsheet)
     try:
         ws = _retry_gspread(doc.worksheet, name)
@@ -93,12 +92,10 @@ def _get_cached_ws(name: str, headers_tuple: tuple):
 
 
 def get_ws(name: str, headers: List[str]):
-    """Lấy Worksheet trên Google Sheets an toàn, không gọi lại metadata nhiều lần."""
     return _get_cached_ws(name, tuple(headers))
 
 
 def _ensure_ws_capacity(ws, additional_rows: int):
-    """Tự động mở rộng số dòng của Sheet nếu tổng dữ liệu vượt quá giới hạn dòng hiện tại."""
     try:
         current_rows = ws.row_count
         if current_rows < additional_rows + 500:
@@ -108,7 +105,6 @@ def _ensure_ws_capacity(ws, additional_rows: int):
 
 
 def _values_to_records(all_values: List[List[Any]], expected_headers: List[str]) -> List[Dict[str, Any]]:
-    """Chuyển mảng 2 chiều từ get_all_values() sang danh sách Dict an toàn, tránh lỗi tràn/lệch cột."""
     if not all_values or len(all_values) < 2:
         return []
     raw_headers = [str(h).strip() for h in all_values[0]]
@@ -127,13 +123,11 @@ def _values_to_records(all_values: List[List[Any]], expected_headers: List[str])
 
 
 def clear_db_cache():
-    """Xóa bộ nhớ đệm dữ liệu mỗi khi có thao tác Lưu hoặc Xóa."""
     st.cache_data.clear()
 
 
 @st.cache_resource(show_spinner=False)
 def init_database():
-    """Khởi tạo 3 trang tính trên Google Sheets đúng 1 lần khi mở ứng dụng."""
     get_ws("eqa_batches", BATCHES_HEADERS)
     get_ws("eqa_results", RESULTS_HEADERS)
     get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
@@ -158,7 +152,6 @@ def get_all_batches() -> List[Dict[str, Any]]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _get_all_results_raw() -> List[Dict[str, Any]]:
-    """Đọc toàn bộ bảng eqa_results đúng 1 lần vào bộ nhớ đệm và tự động gộp GOT/GPT thành AST/ALT."""
     ws = get_ws("eqa_results", RESULTS_HEADERS)
     all_vals = _retry_gspread(ws.get_all_values)
     records = _values_to_records(all_vals, RESULTS_HEADERS)
@@ -203,8 +196,8 @@ def save_eqa_batch(metadata: Dict[str, Any], results: List[Dict[str, Any]], over
 
     batch_row = [
         batch_id, metadata.get("batch_label", ""), metadata.get("batch_no", "01"), metadata.get("month_year", ""),
-        metadata.get("program_name", "Sinh hóa"), metadata.get("program_code", "BC20C"), metadata.get("unit_code", ""),
-        metadata.get("instrument_name", ""), metadata.get("sample_code", ""), metadata.get("provider_name", "VEQAS - TT Kiểm chuẩn XN TP.HCM"),
+        metadata.get("program_name", "Biochemistry"), metadata.get("program_code", "BC20C"), metadata.get("unit_code", ""),
+        metadata.get("instrument_name", ""), metadata.get("sample_code", ""), metadata.get("provider_name", "VEQAS"),
         metadata.get("source_filename", ""), total_tests, pass_count, warn_count, fail_count, now_str, metadata.get("notes", "")
     ]
     _retry_gspread(ws_batches.append_row, batch_row)
@@ -338,19 +331,18 @@ def delete_batch(batch_id: int) -> bool:
 
 
 # ==============================================================================
-# CÁC HÀM LƯU & TRUY XUẤT BẢNG TỔNG HỢP %BIAS THEO QUÝ & MỨC NỒNG ĐỘ
+# QUARTERLY BIAS SUMMARY STORAGE (eqa_bias_summary)
 # ==============================================================================
 def save_bias_summary_records(
     instrument_name: str,
     test_code: str,
     level_records: List[Dict[str, Any]],
-    quarter_period: str = "Quý 1/2026",
+    quarter_period: str = "Q1/2026",
 ):
-    """Lưu (hoặc ghi đè) kết quả %Bias đã chốt của 1 xét nghiệm theo từng Quý (Quý 1, Quý 2, Quý 3, Quý 4)."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
     all_vals = _retry_gspread(ws.get_all_values)
     norm_code, _ = normalize_test_info(test_code, "")
-    q_clean = quarter_period.strip()
+    q_clean = _normalize_quarter_str(quarter_period)
 
     if len(all_vals) > 1:
         headers = all_vals[0]
@@ -397,7 +389,7 @@ def save_bias_summary_records(
             norm_code,
             rec.get("unit", ""),
             rec.get("level_no", 1),
-            rec.get("level_name", "Mức 1 (LOW)"),
+            rec.get("level_name", "Level 1 (LOW)"),
             round(float(rec.get("mean_conc", 0.0) or 0.0), 3),
             int(rec.get("n_batches", 0) or 0),
             rec.get("selected_batches", ""),
@@ -417,7 +409,6 @@ def save_bias_summary_records(
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_all_bias_summaries() -> pd.DataFrame:
-    """Lấy toàn bộ danh sách %Bias đã chốt của các xét nghiệm kèm cột quarter_period."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
     all_vals = _retry_gspread(ws.get_all_values)
     records = _values_to_records(all_vals, BIAS_SUMMARY_HEADERS)
@@ -428,6 +419,9 @@ def get_all_bias_summaries() -> pd.DataFrame:
         norm_c, _ = normalize_test_info(r.get("test_code", ""), "")
         r["test_code"] = norm_c
         r["quarter_period"] = _normalize_quarter_str(r.get("formula_type", ""), r.get("updated_at", ""))
+        lv_str = str(r.get("level_name", "")).strip()
+        if lv_str.startswith("Mức "):
+            r["level_name"] = lv_str.replace("Mức ", "Level ").replace("Chung", "General")
 
     df = pd.DataFrame(records)
     num_cols = ["level_no", "mean_conc", "n_batches", "mean_abs_bias_pct", "mean_signed_bias_pct", "rms_bias_pct", "chosen_bias_pct"]
@@ -442,10 +436,10 @@ def delete_bias_summary_by_test(
     instrument_name: Optional[str] = None,
     quarter_period: Optional[str] = None,
 ):
-    """Xóa kết quả %Bias đã chốt của một xét nghiệm theo đúng Dòng máy và Quý."""
     ws = get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
     all_vals = _retry_gspread(ws.get_all_values)
     norm_code, _ = normalize_test_info(test_code, "")
+    target_q = _normalize_quarter_str(quarter_period) if quarter_period else None
 
     if len(all_vals) > 1:
         headers = all_vals[0]
@@ -467,11 +461,7 @@ def delete_bias_summary_by_test(
                 row_i[q_idx] if q_idx < len(row_i) else "",
                 row_i[upd_idx] if upd_idx < len(row_i) else "",
             )
-            match_q = (
-                True
-                if not quarter_period
-                else r_q.lower() == quarter_period.strip().lower()
-            )
+            match_q = True if not target_q else r_q.lower() == target_q.lower()
             if match_test and match_inst and match_q:
                 _retry_gspread(ws.delete_rows, i + 1)
     clear_db_cache()

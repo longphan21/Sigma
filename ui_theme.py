@@ -5,35 +5,30 @@ _fragment_decorator = getattr(st, "fragment", getattr(st, "experimental_fragment
 
 
 def render_html(html_str: str):
-    """Xóa khoảng trắng đầu dòng để Streamlit luôn hiển thị đúng HTML không bị biến thành code block."""
+    """Strip leading whitespace so Streamlit renders raw HTML cleanly."""
     clean_html = "\n".join(line.lstrip() for line in html_str.splitlines() if line.strip())
     st.markdown(clean_html, unsafe_allow_html=True)
 
 
 # ==============================================================================
-# 1. HỆ THỐNG POP-UP DIALOG HIỂN THỊ GIỮA MÀN HÌNH
+# 1. CENTER MODAL NOTIFICATION SYSTEM
 # ==============================================================================
 def queue_popup(title: str, message: str, status_type: str = "success"):
-    """
-    Lưu thông tin Pop-up vào session_state trước khi gọi st.rerun()
-    để thông báo hiện ra chính giữa màn hình sau khi trang tải lại.
-    status_type nhận các giá trị: 'success' | 'warning' | 'error' | 'info'
-    """
     st.session_state["pending_popup"] = {
         "title": title,
         "message": message,
-        "status_type": status_type
+        "status_type": status_type,
     }
 
 
 if _dialog_decorator is not None:
-    @_dialog_decorator("Thông báo hệ thống")
+    @_dialog_decorator("System Notification")
     def _show_notification_modal(title: str, message: str, status_type: str):
         icon_map = {
             "success": ("✅", "#15803D", "#DCFCE7", "#86EFAC"),
             "warning": ("⚠️", "#B45309", "#FEF3C7", "#FDE68A"),
             "error": ("🗑️", "#B91C1C", "#FEE2E2", "#FCA5A5"),
-            "info": ("ℹ️", "#0369A1", "#E0F2FE", "#BAE6FD")
+            "info": ("ℹ️", "#0369A1", "#E0F2FE", "#BAE6FD"),
         }
         ic, color_text, bg_box, border_box = icon_map.get(status_type, icon_map["success"])
 
@@ -49,7 +44,6 @@ if _dialog_decorator is not None:
 
 
 def render_pending_popup():
-    """Kiểm tra và bật Pop-up ngay khi trang vừa tải lại sau thao tác."""
     if "pending_popup" in st.session_state and st.session_state["pending_popup"] is not None:
         data = st.session_state.pop("pending_popup")
         if _dialog_decorator is not None:
@@ -59,28 +53,26 @@ def render_pending_popup():
 
 
 # ==============================================================================
-# 2. CSS GIAO DIỆN CHUNG (NỀN XANH LÁ NHẠT & CHỮ XANH TỐI DA TRỜI #0A2540)
+# 2. GLOBAL CSS (UNIFORM INPUT/BUTTON HEIGHTS & SINGLE-LINE LABELS)
 # ==============================================================================
 def inject_custom_css():
     render_html("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
-        /* 1. TỔNG THỂ NỀN XANH LÁ NHẠT & CHỮ XANH TỐI DA TRỜI (#0A2540) */
         html, body, .stApp {
             background-color: #F4FAF6 !important;
             color: #0A2540 !important;
             font-family: 'Be Vietnam Pro', -apple-system, BlinkMacSystemFont, sans-serif !important;
         }
 
-        /* Hạ thấp lề trên (3.8rem) để không bị thanh Header của Streamlit che mất khung tiêu đề */
         .block-container,
         [data-testid="stMainBlockContainer"],
         [data-testid="stAppViewBlockContainer"] {
-            padding-top: 3.8rem !important;
-            padding-bottom: 2rem !important;
-            padding-left: 1.6rem !important;
-            padding-right: 1.6rem !important;
+            padding-top: 3.5rem !important;
+            padding-bottom: 1.8rem !important;
+            padding-left: 1.5rem !important;
+            padding-right: 1.5rem !important;
             max-width: 100% !important;
         }
 
@@ -88,13 +80,11 @@ def inject_custom_css():
             font-variant-numeric: tabular-nums !important;
         }
 
-        /* Ẩn icon mắt xích cạnh tiêu đề */
         [data-testid="stHeaderActionElements"],
         h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
             display: none !important;
         }
 
-        /* Định dạng khung Pop-up Dialog chính giữa màn hình */
         div[role="dialog"] {
             max-width: 440px !important;
             width: 92vw !important;
@@ -104,7 +94,6 @@ def inject_custom_css():
             background-color: #FFFFFF !important;
         }
 
-        /* 2. TIÊU ĐỀ GỌN GÀNG, CỠ CHỮ VỪA VẶN */
         h1, h2, h3, h4, h5, h6 {
             color: #0A2540 !important;
             font-family: 'Be Vietnam Pro', sans-serif !important;
@@ -113,19 +102,17 @@ def inject_custom_css():
             margin-top: 0 !important;
         }
         h3 {
-            font-size: 0.98rem !important;
+            font-size: 0.96rem !important;
             font-weight: 800 !important;
-            color: #0A2540 !important;
-            margin-bottom: 0.55rem !important;
+            margin-bottom: 0.5rem !important;
         }
         h4, h5 {
-            font-size: 0.9rem !important;
+            font-size: 0.88rem !important;
             font-weight: 700 !important;
-            color: #0A2540 !important;
             margin-bottom: 0.4rem !important;
         }
 
-        /* 3. NÚT ĐÓNG / MỞ SIDEBAR LUÔN HIỂN THỊ RÕ */
+        /* SIDEBAR TOGGLE */
         [data-testid="stSidebarHeader"] {
             display: flex !important;
             justify-content: flex-end !important;
@@ -157,14 +144,14 @@ def inject_custom_css():
             fill: currentColor !important;
         }
 
-        /* 4. SIDEBAR MENU DỌC (TỰ ĐỘNG THU GỌN VỀ 0PX & TRÀN TRANG CHÍNH KHI ĐÓNG) */
+        /* SIDEBAR */
         [data-testid="stSidebar"] {
             background-color: #E6F4EA !important;
         }
         [data-testid="stSidebar"][aria-expanded="true"] {
             border-right: 1.5px solid #C8E6C9 !important;
-            min-width: 245px !important;
-            max-width: 265px !important;
+            min-width: 235px !important;
+            max-width: 255px !important;
         }
         [data-testid="stSidebar"][aria-expanded="false"] {
             min-width: 0px !important;
@@ -186,19 +173,19 @@ def inject_custom_css():
         }
         .sidebar-brand-title {
             color: #0A2540 !important;
-            font-size: 1.02rem;
+            font-size: 1.0rem;
             font-weight: 800;
             letter-spacing: -0.2px;
         }
         .sidebar-brand-sub {
             color: #2E7D32 !important;
-            font-size: 0.75rem;
+            font-size: 0.74rem;
             font-weight: 600;
             margin-top: 2px;
         }
         .sidebar-section-label {
             color: #0A2540 !important;
-            font-size: 0.72rem;
+            font-size: 0.70rem;
             font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.06em;
@@ -212,13 +199,13 @@ def inject_custom_css():
         }
         [data-testid="stSidebar"] .stButton > button {
             width: 100% !important;
-            min-height: 42px !important;
-            height: 42px !important;
+            min-height: 40px !important;
+            height: 40px !important;
             justify-content: flex-start !important;
             text-align: left !important;
-            padding: 0 13px !important;
+            padding: 0 12px !important;
             border-radius: 8px !important;
-            font-size: 0.85rem !important;
+            font-size: 0.84rem !important;
             font-weight: 700 !important;
             box-shadow: 0 1px 2px rgba(10, 37, 64, 0.04) !important;
             transition: all 0.15s ease !important;
@@ -237,7 +224,7 @@ def inject_custom_css():
         [data-testid="stSidebar"] .stButton > button[kind="secondary"] span {
             color: #0A2540 !important;
             font-weight: 700 !important;
-            font-size: 0.85rem !important;
+            font-size: 0.84rem !important;
         }
         [data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover {
             background-color: #D7F0DD !important;
@@ -253,34 +240,33 @@ def inject_custom_css():
         [data-testid="stSidebar"] .stButton > button[kind="primary"] span {
             color: #FFFFFF !important;
             font-weight: 800 !important;
-            font-size: 0.85rem !important;
+            font-size: 0.84rem !important;
         }
 
-        /* 5. BANNER ĐẦU TRANG NHỎ GỌN, HIỂN THỊ TRỌN VẸN */
+        /* BANNER */
         .page-banner {
             background: linear-gradient(90deg, #E6F4EA 0%, #FFFFFF 100%);
             border: 1px solid #A5D6A7;
             border-left: 5px solid #2E7D32;
             border-radius: 8px;
-            padding: 10px 16px;
-            margin-top: 4px;
-            margin-bottom: 12px;
+            padding: 8px 14px;
+            margin-top: 2px;
+            margin-bottom: 10px;
             box-shadow: 0 1px 3px rgba(10, 37, 64, 0.03);
         }
         .page-banner-title {
             color: #0A2540;
-            font-size: 1.05rem;
+            font-size: 1.0rem;
             font-weight: 800;
-            margin: 0 0 2px 0;
+            margin: 0;
         }
         .page-banner-desc {
             color: #1E3A5F;
-            font-size: 0.8rem;
+            font-size: 0.78rem;
             font-weight: 500;
-            margin: 0;
+            margin: 2px 0 0 0;
         }
 
-        /* Thanh thông báo kết quả lọc tìm kiếm nhanh */
         .search-result-pill {
             background-color: #E6F4EA;
             border: 1px solid #A5D6A7;
@@ -289,19 +275,18 @@ def inject_custom_css():
             border-radius: 6px;
             font-size: 0.78rem;
             font-weight: 600;
-            margin-top: -4px;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
             display: inline-block;
         }
 
-        /* 6. KHỐI CARD TRẮNG & EXPANDER THU NHỎ NHƯ DANH SÁCH MẪU */
+        /* CARDS & EXPANDERS */
         [data-testid="stVerticalBlockBorderWrapper"] {
             background-color: #FFFFFF !important;
             border: 1px solid #C8E6C9 !important;
             border-radius: 8px !important;
             box-shadow: 0 1px 4px rgba(10, 37, 64, 0.03) !important;
-            padding: 0.75rem 0.95rem !important;
-            margin-bottom: 0.65rem !important;
+            padding: 0.7rem 0.9rem !important;
+            margin-bottom: 0.6rem !important;
         }
 
         [data-testid="stExpander"] {
@@ -316,7 +301,6 @@ def inject_custom_css():
             background-color: #FFFFFF !important;
             padding: 6px 12px !important;
             border-radius: 6px !important;
-            transition: background-color 0.12s ease;
         }
         [data-testid="stExpander"] summary:hover {
             background-color: #EEF8F0 !important;
@@ -325,7 +309,6 @@ def inject_custom_css():
             color: #0A2540 !important;
             font-weight: 600 !important;
             font-size: 0.80rem !important;
-            line-height: 1.3 !important;
         }
         [data-testid="stExpanderDetails"] {
             padding: 8px 12px 10px 12px !important;
@@ -333,31 +316,50 @@ def inject_custom_css():
             background-color: #FAFDFB !important;
         }
 
-        /* 7. Ô NHẬP LIỆU & SELECTBOX */
+        /* UNIFORM SINGLE-LINE LABELS & 38PX BOX HEIGHT FOR INPUTS AND BUTTONS */
+        .stSelectbox label, .stTextInput label, .stDateInput label,
+        .stNumberInput label, .stFileUploader label {
+            min-height: 20px !important;
+            margin-bottom: 4px !important;
+        }
         .stSelectbox label p, .stTextInput label p, .stDateInput label p,
         .stNumberInput label p, .stFileUploader label p {
             color: #0A2540 !important;
             font-weight: 700 !important;
-            font-size: 0.82rem !important;
+            font-size: 0.78rem !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            line-height: 1.25 !important;
+            margin: 0 !important;
         }
+
         div[data-baseweb="select"] > div,
-        div[data-baseweb="input"] > div,
+        div[data-baseweb="input"],
         div[data-baseweb="base-input"] {
             background-color: #FFFFFF !important;
             border: 1px solid #A5D6A7 !important;
             border-radius: 7px !important;
             color: #0A2540 !important;
             font-weight: 600 !important;
-            font-size: 0.83rem !important;
+            font-size: 0.82rem !important;
+            height: 38px !important;
+            min-height: 38px !important;
+            max-height: 38px !important;
+            box-sizing: border-box !important;
+        }
+        div[data-baseweb="input"] > div {
+            border: none !important;
+            background: transparent !important;
+            height: 36px !important;
             min-height: 36px !important;
         }
         div[data-baseweb="select"] > div:focus-within,
-        div[data-baseweb="input"] > div:focus-within {
+        div[data-baseweb="input"]:focus-within {
             border-color: #2E7D32 !important;
             box-shadow: 0 0 0 1px #2E7D32 !important;
         }
 
-        /* Khóa con trỏ soạn thảo trong Selectbox trên mọi thiết bị */
         div[data-baseweb="select"],
         div[data-baseweb="select"] * {
             cursor: pointer !important;
@@ -367,28 +369,29 @@ def inject_custom_css():
         div[data-baseweb="select"] input {
             caret-color: transparent !important;
             pointer-events: none !important;
-            cursor: pointer !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
         }
 
-        /* 8. NÚT BẤM TRONG VÙNG NỘI DUNG CHÍNH */
+        /* MAIN CONTENT BUTTONS - EXACT 38PX HEIGHT TO MATCH INPUTS */
         .main .stButton > button[kind="primary"],
         div[role="dialog"] .stButton > button[kind="primary"] {
             background: linear-gradient(135deg, #388E3C 0%, #2E7D32 100%) !important;
             color: #FFFFFF !important;
             font-weight: 700 !important;
-            font-size: 0.82rem !important;
+            font-size: 0.81rem !important;
             border: none !important;
             border-radius: 7px !important;
-            padding: 0.4rem 0.9rem !important;
-            min-height: 36px !important;
+            padding: 0 0.9rem !important;
+            height: 38px !important;
+            min-height: 38px !important;
+            max-height: 38px !important;
+            white-space: nowrap !important;
         }
         .main .stButton > button[kind="primary"] p,
         div[role="dialog"] .stButton > button[kind="primary"] p {
             color: #FFFFFF !important;
             font-weight: 700 !important;
-            font-size: 0.82rem !important;
+            font-size: 0.81rem !important;
+            white-space: nowrap !important;
         }
         .main .stButton > button[kind="secondary"],
         .stDownloadButton > button,
@@ -399,8 +402,11 @@ def inject_custom_css():
             font-size: 0.80rem !important;
             border: 1px solid #81C784 !important;
             border-radius: 7px !important;
-            padding: 0.35rem 0.8rem !important;
-            min-height: 36px !important;
+            padding: 0 0.85rem !important;
+            height: 38px !important;
+            min-height: 38px !important;
+            max-height: 38px !important;
+            white-space: nowrap !important;
         }
         .main .stButton > button[kind="secondary"] p,
         .stDownloadButton > button p,
@@ -408,9 +414,10 @@ def inject_custom_css():
             color: #0A2540 !important;
             font-weight: 600 !important;
             font-size: 0.80rem !important;
+            white-space: nowrap !important;
         }
 
-        /* 9. METRICS HIỂN THỊ SỐ LIỆU */
+        /* METRICS */
         [data-testid="stMetric"] {
             background-color: #F1F8F3 !important;
             border: 1px solid #C8E6C9 !important;
@@ -420,23 +427,24 @@ def inject_custom_css():
         [data-testid="stMetricLabel"] p {
             color: #1B4F72 !important;
             font-weight: 700 !important;
-            font-size: 0.76rem !important;
+            font-size: 0.75rem !important;
+            white-space: nowrap !important;
         }
         [data-testid="stMetricValue"] {
             color: #0A2540 !important;
             font-family: 'JetBrains Mono', monospace !important;
             font-weight: 800 !important;
-            font-size: 1.05rem !important;
+            font-size: 1.02rem !important;
         }
 
-        /* 10. NHÃN TRẠNG THÁI (BADGES) NHỎ GỌN */
+        /* STATUS BADGES */
         .status-badge {
             display: inline-flex;
             align-items: center;
             gap: 3px;
             padding: 1px 8px;
             border-radius: 999px;
-            font-size: 0.72rem;
+            font-size: 0.71rem;
             font-weight: 700;
             line-height: 1.35;
             white-space: nowrap;
@@ -461,12 +469,12 @@ def inject_custom_css():
             background-color: #FFFFFF;
             border: 1px solid #C8E6C9;
             border-radius: 7px;
-            padding: 7px 10px;
-            margin-top: 6px;
+            padding: 6px 10px;
+            margin-top: 4px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 0.82rem;
+            font-size: 0.80rem;
             color: #0A2540;
         }
         .eval-result-pass {
@@ -478,31 +486,19 @@ def inject_custom_css():
             background-color: #FEF2F2;
         }
 
-        /* 11. LỊCH SỬ & BẢNG DỮ LIỆU CHUẨN Y KHOA */
-        .month-header-banner {
-            background-color: #E6F4EA;
-            color: #0A2540;
-            padding: 5px 12px;
-            border: 1px solid #B9E2C2;
-            border-left: 4px solid #2E7D32;
-            border-radius: 6px;
-            font-weight: 700;
-            font-size: 0.82rem;
-            margin-top: 8px;
-            margin-bottom: 6px;
-        }
+        /* META BAR & LAB TABLES */
         .history-meta-bar {
             background-color: #FFFFFF;
             border: 1px solid #DCEEE0;
             border-radius: 6px;
-            padding: 6px 10px;
-            margin-bottom: 8px;
+            padding: 5px 10px;
+            margin-bottom: 6px;
             display: flex;
             flex-wrap: wrap;
             gap: 12px;
             align-items: center;
             color: #0A2540;
-            font-size: 0.78rem;
+            font-size: 0.77rem;
         }
         .date-pill {
             background-color: #2E7D32;
@@ -511,7 +507,7 @@ def inject_custom_css():
             border-radius: 4px;
             font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
-            font-size: 0.75rem;
+            font-size: 0.74rem;
         }
         .lot-pill {
             background-color: #E3F2FD;
@@ -521,7 +517,7 @@ def inject_custom_css():
             border-radius: 4px;
             font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
-            font-size: 0.75rem;
+            font-size: 0.74rem;
         }
 
         .lab-table-wrapper {
@@ -567,7 +563,7 @@ def inject_custom_css():
         .text-right { text-align: right !important; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; }
         .text-center { text-align: center !important; }
 
-        /* 12. DANH SÁCH TỔNG QUAN DẠNG COMPACT LIST */
+        /* COMPACT LIST */
         .overview-list-card {
             background-color: #FFFFFF;
             border: 1px solid #DCEEE0;
@@ -611,7 +607,6 @@ def inject_custom_css():
             color: #0A2540;
             cursor: pointer;
             list-style: none;
-            transition: background-color 0.12s ease;
         }
         summary.overview-row::-webkit-details-marker {
             display: none;
@@ -670,17 +665,13 @@ def inject_custom_css():
 
 
 # ==============================================================================
-# 3. CÁC COMPONENT GIAO DIỆN DÙNG CHUNG CHO MỌI APP
+# 3. SHARED UI HELPERS
 # ==============================================================================
-def init_theme(page_title: str = "Medical Laboratory System", layout: str = "wide", initial_sidebar_state: str = "expanded"):
-    """
-    Hàm khởi tạo nhanh ở đầu file app.py mới:
-    Thiết lập cấu hình trang, nạp toàn bộ CSS và kiểm tra bật Pop-up nếu có.
-    """
+def init_theme(page_title: str = "EQA Six Sigma System", layout: str = "wide", initial_sidebar_state: str = "expanded"):
     st.set_page_config(
         page_title=page_title,
         layout=layout,
-        initial_sidebar_state=initial_sidebar_state
+        initial_sidebar_state=initial_sidebar_state,
     )
     inject_custom_css()
     render_pending_popup()
@@ -690,19 +681,15 @@ def render_sidebar_menu(
     brand_title: str,
     brand_subtitle: str,
     menu_items: list,
-    section_label: str = "MAIN MENU",
-    state_key: str = "active_menu_page"
+    section_label: str = "NAVIGATION",
+    state_key: str = "active_menu_page",
 ) -> str:
-    """
-    Vẽ thanh Sidebar Menu dọc với các nút bấm kích thước đồng nhất 100%.
-    - menu_items: Danh sách tuple dạng [("1. Trang chủ", ":material/science:"), ...]
-    - Trả về tên mục đang được chọn.
-    """
     if not menu_items:
         return ""
 
-    default_page = menu_items[0][0]
-    if state_key not in st.session_state:
+    valid_labels = [m[0] for m in menu_items]
+    default_page = valid_labels[0]
+    if state_key not in st.session_state or st.session_state[state_key] not in valid_labels:
         st.session_state[state_key] = default_page
 
     def _switch_menu_page(target_page: str):
@@ -718,7 +705,7 @@ def render_sidebar_menu(
         """)
 
         for item_label, item_icon in menu_items:
-            is_active = (st.session_state[state_key] == item_label)
+            is_active = st.session_state[state_key] == item_label
             btn_text = f"{item_icon}  {item_label}" if item_icon else item_label
             st.button(
                 btn_text,
@@ -726,30 +713,29 @@ def render_sidebar_menu(
                 type="primary" if is_active else "secondary",
                 use_container_width=True,
                 on_click=_switch_menu_page,
-                args=(item_label,)
+                args=(item_label,),
             )
 
     return st.session_state[state_key]
 
 
-def render_page_banner(title: str, desc: str):
-    """Vẽ khung Banner tiêu đề ở đầu mỗi trang."""
+def render_page_banner(title: str, desc: str = ""):
+    desc_html = f'<div class="page-banner-desc">{desc}</div>' if desc else ""
     render_html(f"""
     <div class="page-banner">
         <div class="page-banner-title">{title}</div>
-        <div class="page-banner-desc">{desc}</div>
+        {desc_html}
     </div>
     """)
 
 
 def format_status_badge_html(status_val: str) -> str:
-    """Trả về mã HTML của nhãn trạng thái bo tròn (Đạt / Không đạt / Cảnh báo)."""
     s = str(status_val).strip().upper()
     if s in ("PASS", "ĐẠT", "ACTIVE", "✅ ĐẠT", "✓ ACTIVE"):
-        label = "✓ Active" if "ACTIVE" in s else "✓ Đạt"
+        label = "✓ Active" if "ACTIVE" in s else "✓ PASS"
         return f'<span class="status-badge badge-pass">{label}</span>'
     if s in ("FAIL", "TRƯỢT", "KHÔNG ĐẠT", "❌ TRƯỢT"):
-        return '<span class="status-badge badge-fail">✕ Không đạt</span>'
+        return '<span class="status-badge badge-fail">✕ FAIL</span>'
     if s in ("INACTIVE", "⏸ INACTIVE"):
         return '<span class="status-badge badge-warn">⏸ Inactive</span>'
-    return f'<span class="status-badge badge-warn">! {status_val}</span>'
+    return f'<span class="status-badge badge-warn">{status_val}</span>'

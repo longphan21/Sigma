@@ -3,7 +3,6 @@ from ui_theme import render_html, format_status_badge_html
 
 
 def fmt_num(val, decimals: int = 3) -> str:
-    """Định dạng số thập phân sử dụng dấu chấm (.) chuẩn hệ thống phòng xét nghiệm."""
     if val is None or val == "":
         return "-"
     try:
@@ -16,36 +15,30 @@ def fmt_num(val, decimals: int = 3) -> str:
 
 
 def map_eval_badge(status_code: str, z_score: float = None) -> str:
-    """Chuyển trạng thái đánh giá EQA (PASS / WARN / FAIL) sang badge HTML của ui_theme."""
     s = str(status_code or "").upper()
     if s == "PASS":
-        return format_status_badge_html("ĐẠT")
+        return format_status_badge_html("PASS")
     if s == "FAIL":
-        return format_status_badge_html("KHÔNG ĐẠT")
-    return format_status_badge_html(f"CẢNH BÁO (|z|={fmt_num(abs(z_score), 2)})" if z_score is not None else "CẢNH BÁO")
+        return format_status_badge_html("FAIL")
+    return format_status_badge_html(f"WARN (|z|={fmt_num(abs(z_score), 2)})" if z_score is not None else "WARN")
 
 
 def render_batch_meta_bar(batch: Dict[str, Any]):
-    """Hiển thị thanh thông tin tóm tắt của 1 đợt Ngoại kiểm (.history-meta-bar)."""
     render_html(f"""
     <div class="history-meta-bar">
         <span><span class="date-pill">{batch.get('month_year', '-')}</span></span>
-        <span><b>Đợt:</b> <span class="lot-pill">Đợt {batch.get('batch_no', '01')}</span></span>
-        <span><b>Chương trình:</b> {batch.get('program_name', '-')} (<b>{batch.get('program_code', '-')}</b>)</span>
-        <span><b>Thiết bị:</b> {batch.get('instrument_name', '-')}</span>
-        <span><b>Mã đơn vị:</b> <code>{batch.get('unit_code', '-')}</code></span>
-        <span><b>Mã mẫu:</b> <span class="lot-pill">{batch.get('sample_code', '-')}</span></span>
+        <span><b>Batch:</b> <span class="lot-pill">#{batch.get('batch_no', '01')}</span></span>
+        <span><b>Program:</b> {batch.get('program_name', '-')} (<b>{batch.get('program_code', '-')}</b>)</span>
+        <span><b>Instrument:</b> {batch.get('instrument_name', '-')}</span>
+        <span><b>Unit ID:</b> <code>{batch.get('unit_code', '-')}</code></span>
+        <span><b>Sample ID:</b> <span class="lot-pill">{batch.get('sample_code', '-')}</span></span>
     </div>
     """)
 
 
 def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 340):
-    """
-    Hiển thị bảng kết quả ngoại kiểm chuẩn y khoa (.lab-table-wrapper & .lab-table)
-    với công thức cố định BIAS % = (|KQ đơn vị - GT ấn định| * 100) / GT ấn định làm tròn 3 chữ số thập phân.
-    """
     if not results:
-        render_html('<div class="search-result-pill">Không có dữ liệu xét nghiệm phù hợp.</div>')
+        render_html('<div class="search-result-pill">No matching records found.</div>')
         return
 
     rows_html = []
@@ -91,18 +84,18 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
             <thead>
                 <tr>
                     <th class="text-center">#</th>
-                    <th class="text-left">Mã XN</th>
-                    <th class="text-left">Tên thông số xét nghiệm</th>
-                    <th class="text-center">Đơn vị</th>
-                    <th class="text-right">KQ Đơn vị (D)</th>
-                    <th class="text-right">GT Ấn định (E)</th>
+                    <th class="text-left">Analyte</th>
+                    <th class="text-left">Full Name</th>
+                    <th class="text-center">Unit</th>
+                    <th class="text-right">Lab Result</th>
+                    <th class="text-right">Assigned</th>
                     <th class="text-right">|D - E|</th>
-                    <th class="text-right">BIAS %</th>
+                    <th class="text-right">Bias %</th>
                     <th class="text-right">σp</th>
                     <th class="text-right">z-score</th>
-                    <th class="text-right">SD Nhóm máy</th>
-                    <th class="text-right">%CV Nhóm máy</th>
-                    <th class="text-center">Đánh giá</th>
+                    <th class="text-right">Peer SD</th>
+                    <th class="text-right">Peer %CV</th>
+                    <th class="text-center">Status</th>
                 </tr>
             </thead>
             <tbody>
@@ -115,10 +108,6 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
 
 
 def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, Any]]):
-    """
-    Hiển thị danh sách xét nghiệm trong 1 đợt theo dạng Compact List (.overview-list-card)
-    đúng cấu trúc CSS của ui_theme.py, bấm vào từng xét nghiệm sẽ xổ ra 3 nhóm so sánh (All / Method / Instrument).
-    """
     if not results:
         return
 
@@ -150,17 +139,17 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                     <span class="item-avatar">{avatar_txt}</span>
                     <span>{code} — {r.get('test_full_name', '')} <small style="color:#64748B;">({r.get('unit', '')})</small></span>
                 </div>
-                <div class="item-lot-cell">KQ: {fmt_num(lab_v, 3)} / {fmt_num(asg_v, 3)}</div>
-                <div class="item-date-cell">BIAS%: <b>{bias_str}</b> | {z_str}</div>
+                <div class="item-lot-cell">{fmt_num(lab_v, 3)} / {fmt_num(asg_v, 3)}</div>
+                <div class="item-date-cell">Bias: <b>{bias_str}</b> | {z_str}</div>
                 <div>{badge_html}</div>
-                <div class="item-action-cell">Chi tiết ▾</div>
+                <div class="item-action-cell">Details ▾</div>
             </summary>
             <div class="overview-subbox">
                 <div class="history-meta-bar" style="margin-bottom:6px;">
-                    <span><b>Kết quả đơn vị (D):</b> <code>{fmt_num(lab_v, 3)} {r.get('unit', '')}</code></span>
-                    <span><b>Giá trị ấn định (E):</b> <code>{fmt_num(asg_v, 3)} {r.get('unit', '')}</code></span>
+                    <span><b>Lab Result:</b> <code>{fmt_num(lab_v, 3)} {r.get('unit', '')}</code></span>
+                    <span><b>Assigned:</b> <code>{fmt_num(asg_v, 3)} {r.get('unit', '')}</code></span>
                     <span><b>|D - E|:</b> <code>{fmt_num(r.get('bias_abs'), 3)}</code></span>
-                    <span><b>BIAS % = |D-E|*100/E:</b> <code>{bias_str}</code></span>
+                    <span><b>Bias %:</b> <code>{bias_str}</code></span>
                     <span><b>σp:</b> <code>{fmt_num(r.get('sigma_p'), 3)}</code></span>
                     <span><b>z-score:</b> <code>{z_str}</code></span>
                 </div>
@@ -168,19 +157,19 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                     <table class="lab-table">
                         <thead>
                             <tr>
-                                <th class="text-left">Nhóm phân tích thống kê (VEQAS)</th>
-                                <th class="text-left">Tên nhóm / Phương pháp / Máy</th>
+                                <th class="text-left">Peer Group</th>
+                                <th class="text-left">Group / Method / Instrument</th>
                                 <th class="text-right">N</th>
-                                <th class="text-right">Giá trị ấn định</th>
+                                <th class="text-right">Assigned</th>
                                 <th class="text-right">SD</th>
                                 <th class="text-right">%CV</th>
-                                <th class="text-right">Số KQ loại</th>
+                                <th class="text-right">Excluded</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
-                                <td class="text-left"><b>1. Tất cả phương pháp</b></td>
-                                <td class="text-left">Tất cả phương pháp</td>
+                                <td class="text-left"><b>1. All Methods</b></td>
+                                <td class="text-left">All Methods</td>
                                 <td class="text-right">{fmt_num(r.get('all_n'), 0)}</td>
                                 <td class="text-right">{fmt_num(r.get('all_mean'), 3)}</td>
                                 <td class="text-right">{fmt_num(r.get('all_sd'), 4)}</td>
@@ -188,7 +177,7 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                                 <td class="text-right">{fmt_num(r.get('all_excluded'), 0)}</td>
                             </tr>
                             <tr>
-                                <td class="text-left"><b>2. Nhóm phương pháp</b></td>
+                                <td class="text-left"><b>2. Method Group</b></td>
                                 <td class="text-left">{r.get('method_name') or '-'}</td>
                                 <td class="text-right">{fmt_num(r.get('method_n'), 0)}</td>
                                 <td class="text-right">{fmt_num(r.get('method_mean'), 3)}</td>
@@ -197,7 +186,7 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                                 <td class="text-right">{fmt_num(r.get('method_excluded'), 0)}</td>
                             </tr>
                             <tr>
-                                <td class="text-left"><b>3. Nhóm thiết bị (Peer)</b></td>
+                                <td class="text-left"><b>3. Instrument Group</b></td>
                                 <td class="text-left"><b>{r.get('peer_name') or batch.get('instrument_name', '-')}</b></td>
                                 <td class="text-right">{fmt_num(r.get('peer_n'), 0)}</td>
                                 <td class="text-right"><b>{fmt_num(r.get('peer_mean'), 3)}</b></td>
@@ -215,11 +204,11 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
     card_html = f"""
     <div class="overview-list-card">
         <div class="overview-group-header">
-            <div class="overview-mach-title">🔬 {batch.get('instrument_name', 'Thiết bị')} — {batch.get('batch_label', '')} ({len(results)} XN)</div>
-            <div>KQ Đơn vị / Ấn định</div>
-            <div>BIAS % & z-score</div>
-            <div>Trạng thái</div>
-            <div style="text-align:right;">Thao tác</div>
+            <div class="overview-mach-title">🔬 {batch.get('instrument_name', 'Instrument')} — {batch.get('batch_label', '')} ({len(results)} Analytes)</div>
+            <div>Lab / Assigned</div>
+            <div>Bias % & z-score</div>
+            <div>Status</div>
+            <div style="text-align:right;">Action</div>
         </div>
         {"".join(items_html)}
     </div>
