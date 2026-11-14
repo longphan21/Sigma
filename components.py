@@ -42,7 +42,7 @@ def render_batch_meta_bar(batch: Dict[str, Any]):
 def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 340):
     """
     Hiển thị bảng kết quả ngoại kiểm chuẩn y khoa (.lab-table-wrapper & .lab-table)
-    với công thức cố định BIAS % = (|KQ đơn vị - GT ấn định| * 100) / GT ấn định.
+    với công thức cố định BIAS % = (|KQ đơn vị - GT ấn định| * 100) / GT ấn định làm tròn 3 chữ số thập phân.
     """
     if not results:
         render_html('<div class="search-result-pill">Không có dữ liệu xét nghiệm phù hợp.</div>')
@@ -58,11 +58,11 @@ def render_eqa_results_table(results: List[Dict[str, Any]], max_height: int = 34
         if lab_v is not None and asg_v not in (None, 0):
             try:
                 exact_b = abs(float(lab_v) - float(asg_v)) * 100.0 / abs(float(asg_v))
-                bias_pct_str = f"{exact_b:.2f}%"
+                bias_pct_str = f"{exact_b:.3f}%"
             except Exception:
-                bias_pct_str = f"{abs(float(bias_pct_val)):.2f}%" if bias_pct_val is not None else "-"
+                bias_pct_str = f"{abs(float(bias_pct_val)):.3f}%" if bias_pct_val is not None else "-"
         else:
-            bias_pct_str = f"{abs(float(bias_pct_val)):.2f}%" if bias_pct_val is not None else "-"
+            bias_pct_str = f"{abs(float(bias_pct_val)):.3f}%" if bias_pct_val is not None else "-"
 
         z_val = r.get("z_score")
         z_str = f"{float(z_val):+.2f}" if z_val is not None else "-"
@@ -134,11 +134,11 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
         if lab_v is not None and asg_v not in (None, 0):
             try:
                 exact_b = abs(float(lab_v) - float(asg_v)) * 100.0 / abs(float(asg_v))
-                bias_str = f"{exact_b:.2f}%"
+                bias_str = f"{exact_b:.3f}%"
             except Exception:
-                bias_str = f"{abs(float(bias_pct)):.2f}%" if bias_pct is not None else "-"
+                bias_str = f"{abs(float(bias_pct)):.3f}%" if bias_pct is not None else "-"
         else:
-            bias_str = f"{abs(float(bias_pct)):.2f}%" if bias_pct is not None else "-"
+            bias_str = f"{abs(float(bias_pct)):.3f}%" if bias_pct is not None else "-"
 
         z_val = r.get("z_score")
         z_str = f"z = {float(z_val):+.2f}" if z_val is not None else "-"
@@ -159,7 +159,7 @@ def render_overview_compact_card(batch: Dict[str, Any], results: List[Dict[str, 
                 <div class="history-meta-bar" style="margin-bottom:6px;">
                     <span><b>Kết quả đơn vị (D):</b> <code>{fmt_num(lab_v, 3)} {r.get('unit', '')}</code></span>
                     <span><b>Giá trị ấn định (E):</b> <code>{fmt_num(asg_v, 3)} {r.get('unit', '')}</code></span>
-                    <span><b>|D - E|:</b> <code>{fmt_num(r.get('bias_abs'), 4)}</code></span>
+                    <span><b>|D - E|:</b> <code>{fmt_num(r.get('bias_abs'), 3)}</code></span>
                     <span><b>BIAS % = |D-E|*100/E:</b> <code>{bias_str}</code></span>
                     <span><b>σp:</b> <code>{fmt_num(r.get('sigma_p'), 3)}</code></span>
                     <span><b>z-score:</b> <code>{z_str}</code></span>

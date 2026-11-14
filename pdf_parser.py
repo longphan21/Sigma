@@ -90,10 +90,25 @@ def _group_by_y(items: List[Tuple[float, str]], tolerance: float = 2.2) -> List[
     return grouped
 
 
+def normalize_test_code_and_name(test_code: str, full_name: str) -> Tuple[str, str]:
+    """
+    Đồng nhất mã và tên xét nghiệm GOT -> AST, GPT -> ALT để không bị tách rời giữa các đợt.
+    """
+    c_up = str(test_code or "").strip().upper()
+    f_up = str(full_name or "").strip().upper()
+
+    if c_up in ("GPT", "ALT", "ALAT") or "ALT (GPT)" in f_up or "ALANINE AMINOTRANSFERASE" in f_up:
+        return "ALT", "Alanine Aminotransferase (ALT)"
+    if c_up in ("GOT", "AST", "ASAT") or "AST (GOT)" in f_up or "ASPARTATE AMINOTRANSFERASE" in f_up:
+        return "AST", "Aspartate Aminotransferase (AST)"
+
+    return str(test_code or "").strip(), str(full_name or "").strip()
+
+
 def _parse_test_header(raw_header: str) -> Tuple[str, str, str]:
     """
     Tách tên đầy đủ, mã viết tắt và đơn vị đo từ chuỗi tiêu đề thông số VEQAS.
-    Có xử lý lỗi dấu ngoặc lồng nhau (VD: ALT (GPT)).
+    Thống nhất GOT/GPT về AST/ALT.
     """
     s = raw_header.strip()
 
@@ -101,8 +116,10 @@ def _parse_test_header(raw_header: str) -> Tuple[str, str, str]:
     if not parens:
         parts = s.rsplit(" ", 1)
         if len(parts) == 2:
-            return parts[0].strip(), parts[0].strip(), parts[1].strip()
-        return s, s, ""
+            t_code, f_name = normalize_test_code_and_name(parts[0].strip(), parts[0].strip())
+            return t_code, f_name, parts[1].strip()
+        t_code, f_name = normalize_test_code_and_name(s, s)
+        return t_code, f_name, ""
 
     last_paren = parens[-1]
     test_code = last_paren.group(1).strip()
@@ -112,6 +129,7 @@ def _parse_test_header(raw_header: str) -> Tuple[str, str, str]:
         unit = unit[1:].strip()
 
     full_name = s if not unit else s[:-len(unit)].strip()
+    test_code, full_name = normalize_test_code_and_name(test_code, full_name)
     return test_code, full_name, unit
 
 
@@ -178,7 +196,7 @@ def _infer_month_year(batch_no: str, filename: str, full_text: str) -> str:
 
 def _compute_bias_fields(item: Dict[str, Any]):
     """
-    Tính và cập nhật bias_abs, bias_pct = (|D - E| * 100) / E, z_score và eval_status cho 1 xét nghiệm.
+    Tính và cập nhật bias_abs, bias_pct = (|D - E| * 100) / E (làm tròn 3 chữ số thập phân), z_score và eval_status.
     """
     lab_result = item.get("lab_result")
     assigned_value = item.get("assigned_value")
@@ -188,8 +206,8 @@ def _compute_bias_fields(item: Dict[str, Any]):
     bias_abs = None
     bias_pct = None
     if lab_result is not None and assigned_value not in (None, 0):
-        bias_abs = round(abs(float(lab_result) - float(assigned_value)), 4)
-        bias_pct = round((abs(float(lab_result) - float(assigned_value)) * 100.0) / abs(float(assigned_value)), 4)
+        bias_abs = round(abs(float(lab_result) - float(assigned_value)), 3)
+        bias_pct = round((abs(float(lab_result) - float(assigned_value)) * 100.0) / abs(float(assigned_value)), 3)
 
     if z_score is None and lab_result is not None and assigned_value is not None and sigma_p not in (None, 0):
         z_score = round((float(lab_result) - float(assigned_value)) / float(sigma_p), 2)
@@ -375,7 +393,7 @@ def parse_veqas_pdf(file_source: Union[str, bytes, io.BytesIO], filename: str = 
                     non_nums = [t for t in tokens if not _is_numeric_token(t)]
                     if len(nums) == 4 and len(non_nums) >= 2:
                         raw_t_name = non_nums[-1].strip()
-                        parsed_code, _, _ = _parse_test_header(raw_t_name)
+                        parsed_code, parsed_full, _ = _parse_test_header(raw_t_name)
                         t_code = parsed_code or raw_t_name
                         t_unit = non_nums[0].strip()
                         z_val = _to_float(nums[0])
@@ -384,7 +402,7 @@ def parse_veqas_pdf(file_source: Union[str, bytes, io.BytesIO], filename: str = 
                         res_val = _to_float(nums[3])
                         summary_lookup[t_code.upper()] = {
                             "test_code": t_code,
-                            "test_full_name": raw_t_name,
+                            "test_full_name": parsed_full or raw_t_name,
                             "unit": t_unit,
                             "lab_result": res_val,
                             "assigned_value": asg_val,
