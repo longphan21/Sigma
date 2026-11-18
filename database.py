@@ -26,7 +26,7 @@ BIAS_SUMMARY_HEADERS = [
 ]
 
 TEA_HEADERS = [
-    "id", "test_code", "test_full_name", "unit",
+    "id", "instrument_name", "test_code", "test_full_name", "unit",
     "tea_source", "tea_pct", "is_default", "notes", "updated_at"
 ]
 
@@ -502,21 +502,26 @@ def get_all_tea_standards() -> pd.DataFrame:
         return pd.DataFrame(columns=TEA_HEADERS)
 
     for r in records:
+        r["instrument_name"] = str(r.get("instrument_name", "") or "").strip()
         norm_c, norm_n = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
         r["test_code"] = norm_c
         r["test_full_name"] = norm_n or norm_c
         r["is_default"] = str(r.get("is_default", "")).strip().upper() in ("TRUE", "1", "YES")
 
     df = pd.DataFrame(records)
+    for col in TEA_HEADERS:
+        if col not in df.columns:
+            df[col] = ""
     df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
     df["tea_pct"] = pd.to_numeric(df["tea_pct"], errors="coerce")
-    return df.sort_values(
-        by=["test_code", "is_default", "tea_source"],
-        ascending=[True, False, True],
+    return df[TEA_HEADERS].sort_values(
+        by=["instrument_name", "test_code", "is_default", "tea_source"],
+        ascending=[True, True, False, True],
     ).reset_index(drop=True)
 
 
 def save_tea_standard(
+    instrument_name: str,
     test_code: str,
     test_full_name: str,
     unit: str,
@@ -529,16 +534,18 @@ def save_tea_standard(
     all_vals = _retry_gspread(ws.get_all_values)
     existing = _values_to_records(all_vals, TEA_HEADERS)
 
+    clean_inst = str(instrument_name).strip()
     norm_code, norm_name = normalize_test_info(test_code, test_full_name)
     norm_name = norm_name or norm_code
     clean_source = str(tea_source).strip()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    same_test_rows = [
+    same_inst_test_rows = [
         r for r in existing
-        if normalize_test_info(r.get("test_code", ""), "")[0].upper() == norm_code.upper()
+        if str(r.get("instrument_name", "")).strip().lower() == clean_inst.lower()
+        and normalize_test_info(r.get("test_code", ""), "")[0].upper() == norm_code.upper()
     ]
-    if not same_test_rows:
+    if not same_inst_test_rows:
         is_default = True
 
     updated_existing = False
@@ -547,14 +554,21 @@ def save_tea_standard(
     new_rows = [TEA_HEADERS]
     for r in existing:
         r_id = int(r["id"]) if str(r.get("id", "")).isdigit() else 0
+        r_inst = str(r.get("instrument_name", "")).strip()
         r_code, r_name = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
         r_source = str(r.get("tea_source", "")).strip()
         r_def = str(r.get("is_default", "")).strip().upper() in ("TRUE", "1", "YES")
 
-        if r_code.upper() == norm_code.upper() and r_source.lower() == clean_source.lower():
+        same_target = (
+            r_inst.lower() == clean_inst.lower()
+            and r_code.upper() == norm_code.upper()
+        )
+
+        if same_target and r_source.lower() == clean_source.lower():
             updated_existing = True
             new_rows.append([
                 r_id,
+                clean_inst,
                 norm_code,
                 norm_name or r_name,
                 str(unit).strip() or r.get("unit", ""),
@@ -565,10 +579,11 @@ def save_tea_standard(
                 now_str,
             ])
         else:
-            if r_code.upper() == norm_code.upper() and is_default:
+            if same_target and is_default:
                 r_def = False
             new_rows.append([
                 r_id,
+                r_inst,
                 r_code,
                 r_name or r_code,
                 r.get("unit", ""),
@@ -583,6 +598,7 @@ def save_tea_standard(
         max_id += 1
         new_rows.append([
             max_id,
+            clean_inst,
             norm_code,
             norm_name,
             str(unit).strip(),
@@ -595,8 +611,9 @@ def save_tea_standard(
 
     _retry_gspread(ws.clear)
     _ensure_ws_capacity(ws, len(new_rows) + 10)
-    _retry_gspread(ws.update, f"A1:I{len(new_rows)}", new_rows)
+    _retry_gspread(ws.append_rows, new_rows)
     clear_db_cache()
+
 
 def update_tea_standards_bulk(df_edited: pd.DataFrame):
     ws = get_ws("tea_standards", TEA_HEADERS)
@@ -607,37 +624,43 @@ def update_tea_standards_bulk(df_edited: pd.DataFrame):
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     edit_map: Dict[int, Dict[str, Any]] = {}
-    default_chosen_by_test: Dict[str, int] = {}
+    default_chosen_by_inst_test: Dict[Tuple[str, str], int] = {}
 
     for _, row in df_edited.iterrows():
         rid = int(row["id"])
+        inst_key = str(row.get("instrument_name", "") or "").strip().lower()
         t_code = str(row["test_code"]).strip().upper()
         is_def = bool(row.get("is_default", False))
         edit_map[rid] = {
+            "instrument_name": str(row.get("instrument_name", "") or "").strip(),
             "unit": str(row.get("unit", "") or "").strip(),
             "tea_source": str(row.get("tea_source", "") or "").strip(),
             "tea_pct": round(float(row.get("tea_pct", 0.0) or 0.0), 3),
             "is_default": is_def,
             "notes": str(row.get("notes", "") or "").strip(),
         }
-        if is_def and t_code not in default_chosen_by_test:
-            default_chosen_by_test[t_code] = rid
+        pair_key = (inst_key, t_code)
+        if is_def and pair_key not in default_chosen_by_inst_test:
+            default_chosen_by_inst_test[pair_key] = rid
 
     new_rows = [TEA_HEADERS]
     for r in existing:
         rid = int(r["id"]) if str(r.get("id", "")).isdigit() else 0
+        r_inst = str(r.get("instrument_name", "") or "").strip()
         r_code, r_name = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
-        t_key = r_code.upper()
+        pair_key = (r_inst.lower(), r_code.upper())
 
         if rid in edit_map:
             ed = edit_map[rid]
+            pair_key_ed = (ed["instrument_name"].lower(), r_code.upper())
             final_def = (
-                (default_chosen_by_test.get(t_key) == rid)
-                if t_key in default_chosen_by_test
+                (default_chosen_by_inst_test.get(pair_key_ed) == rid)
+                if pair_key_ed in default_chosen_by_inst_test
                 else ed["is_default"]
             )
             new_rows.append([
                 rid,
+                ed["instrument_name"],
                 r_code,
                 r_name or r_code,
                 ed["unit"],
@@ -649,10 +672,11 @@ def update_tea_standards_bulk(df_edited: pd.DataFrame):
             ])
         else:
             orig_def = str(r.get("is_default", "")).strip().upper() in ("TRUE", "1", "YES")
-            if t_key in default_chosen_by_test:
+            if pair_key in default_chosen_by_inst_test:
                 orig_def = False
             new_rows.append([
                 rid,
+                r_inst,
                 r_code,
                 r_name or r_code,
                 r.get("unit", ""),
@@ -664,9 +688,9 @@ def update_tea_standards_bulk(df_edited: pd.DataFrame):
             ])
 
     _retry_gspread(ws.clear)
-    _retry_gspread(ws.update, f"A1:I{len(new_rows)}", new_rows)
+    _ensure_ws_capacity(ws, len(new_rows) + 10)
+    _retry_gspread(ws.append_rows, new_rows)
     clear_db_cache()
-
 
 def delete_tea_standard(record_id: int):
     ws = get_ws("tea_standards", TEA_HEADERS)

@@ -296,12 +296,13 @@ def render_sigma_calculator_page():
                     & (df_cv_all["quarter_period"].astype(str).str.strip().str.lower() == active_quarter_period.lower())
                 ]
 
-            # Tra cứu tất cả nguồn TEa của xét nghiệm này
+            # Tra cứu tất cả nguồn TEa của xét nghiệm này theo dòng máy đang chọn
             sub_tea = pd.DataFrame()
             if not df_tea_all.empty:
                 sub_tea = df_tea_all[
-                    df_tea_all["test_code"].astype(str).str.strip().str.upper() == sel_test.strip().upper()
-                ].sort_values(by=["is_default", "tea_pct"], ascending=[False, False]).reset_index(drop=True)
+                    (df_tea_all["instrument_name"].astype(str).str.strip().str.lower() == sel_inst.strip().lower())
+                    & (df_tea_all["test_code"].astype(str).str.strip().str.upper() == sel_test.strip().upper())
+                    ].sort_values(by=["is_default", "tea_pct"], ascending=[False, False]).reset_index(drop=True)
 
             has_bias_str = f"✓ {len(sub_bias)} Lv" if not sub_bias.empty else "⚠️ Not saved"
             has_cv_str = f"✓ {len(sub_cv)} Lv" if not sub_cv.empty else "⚠️ Not saved"
