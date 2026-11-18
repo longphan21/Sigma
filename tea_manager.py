@@ -86,7 +86,7 @@ def render_tea_manager_page():
 
         inst_options = inst_list + ["+ Custom Instrument"]
         c_inst, c1, c2, c3, c4, c5 = st.columns(
-            [1.35, 1.75, 0.65, 1.15, 0.85, 0.85], vertical_alignment="bottom"
+            [1.75, 1.75, 0.55, 1.05, 0.75, 0.75], vertical_alignment="bottom"
         )
 
         sel_inst_opt = c_inst.selectbox(

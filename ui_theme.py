@@ -353,22 +353,41 @@ def inject_custom_css():
             border-radius: 7px !important;
             color: #0A2540 !important;
             font-weight: 600 !important;
-            font-size: 0.82rem !important;
-            height: 38px !important;
-            min-height: 38px !important;
-            max-height: 38px !important;
+            font-size: 0.75rem !important;
+            height: 36px !important;
+            min-height: 36px !important;
+            max-height: 36px !important;
             box-sizing: border-box !important;
+        }
+        div[data-baseweb="select"] > div > div:first-child {
+            padding-left: 8px !important;
+            padding-right: 2px !important;
         }
         div[data-baseweb="input"] > div {
             border: none !important;
             background: transparent !important;
-            height: 36px !important;
-            min-height: 36px !important;
+            height: 34px !important;
+            min-height: 34px !important;
         }
-        div[data-baseweb="select"] > div:focus-within,
-        div[data-baseweb="input"]:focus-within {
-            border-color: #2E7D32 !important;
-            box-shadow: 0 0 0 1px #2E7D32 !important;
+
+        /* DANH SÁCH XỔ XUỐNG (DROPDOWN POPOVER): CHỮ NHỎ & HIỆN FULL TÊN MÁY */
+        div[data-baseweb="popover"] {
+            min-width: 270px !important;
+            width: auto !important;
+            max-width: 440px !important;
+        }
+        ul[data-testid="stSelectboxVirtualDropdown"],
+        div[data-baseweb="popover"] ul,
+        div[data-baseweb="popover"] li,
+        div[data-baseweb="popover"] [role="option"] {
+            font-size: 0.75rem !important;
+            font-weight: 600 !important;
+            color: #0A2540 !important;
+            white-space: normal !important;
+            word-break: break-word !important;
+            line-height: 1.3 !important;
+            padding-top: 5px !important;
+            padding-bottom: 5px !important;
         }
 
         div[data-baseweb="select"],
