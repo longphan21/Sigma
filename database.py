@@ -723,98 +723,60 @@ def save_iqc_lot(
 ):
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
     all_vals = _retry_gspread(ws.get_all_values)
-    existing = _values_to_records(all_vals, IQC_LOTS_HEADERS)
-
     norm_code, norm_name = normalize_test_info(test_code, test_full_name)
     norm_name = norm_name or norm_code
     clean_inst = str(instrument_name).strip()
     clean_lot = str(lot_no).strip()
     lv_int = int(level_no)
+
+    if len(all_vals) > 1:
+        headers = all_vals[0]
+        inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 1
+        test_idx = headers.index("test_code") if "test_code" in headers else 2
+        lv_idx = headers.index("level_no") if "level_no" in headers else 5
+        lot_idx = headers.index("lot_no") if "lot_no" in headers else 7
+
+        for i in range(len(all_vals) - 1, 0, -1):
+            row_i = all_vals[i]
+            r_inst = str(row_i[inst_idx]).strip().lower() if inst_idx < len(row_i) else ""
+            r_test, _ = normalize_test_info(row_i[test_idx] if test_idx < len(row_i) else "", "")
+            r_lv = int(float(row_i[lv_idx] or 1)) if lv_idx < len(row_i) and str(row_i[lv_idx]).strip() else 1
+            r_lot = str(row_i[lot_idx]).strip().lower() if lot_idx < len(row_i) else ""
+
+            if (
+                r_inst == clean_inst.lower()
+                and r_test.upper() == norm_code.upper()
+                and r_lv == lv_int
+                and r_lot == clean_lot.lower()
+            ):
+                _retry_gspread(ws.delete_rows, i + 1)
+
+    after_vals = _retry_gspread(ws.get_all_values)
+    existing = _values_to_records(after_vals, IQC_LOTS_HEADERS)
+    next_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0) + 1
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    updated_existing = False
-    max_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0)
-
-    new_rows = [IQC_LOTS_HEADERS]
-    for r in existing:
-        r_id = int(r["id"]) if str(r.get("id", "")).isdigit() else 0
-        r_inst = str(r.get("instrument_name", "")).strip()
-        r_code, r_fname = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
-        r_lv = int(float(r.get("level_no", 1) or 1))
-        r_lot = str(r.get("lot_no", "")).strip()
-
-        if (
-            r_inst.lower() == clean_inst.lower()
-            and r_code.upper() == norm_code.upper()
-            and r_lv == lv_int
-            and r_lot.lower() == clean_lot.lower()
-        ):
-            updated_existing = True
-            new_rows.append([
-                r_id,
-                clean_inst,
-                norm_code,
-                norm_name or r_fname,
-                str(unit).strip() or r.get("unit", ""),
-                lv_int,
-                level_name,
-                clean_lot,
-                str(start_date).strip(),
-                str(cutoff_date).strip(),
-                str(lot_status).strip(),
-                round(float(mean_val), 3),
-                round(float(sd_val), 4),
-                round(float(cv_pct), 3),
-                int(n_points),
-                str(notes).strip(),
-                now_str,
-            ])
-        else:
-            new_rows.append([
-                r_id,
-                r_inst,
-                r_code,
-                r_fname or r_code,
-                r.get("unit", ""),
-                r_lv,
-                r.get("level_name", f"Level {r_lv}"),
-                r_lot,
-                r.get("start_date", ""),
-                r.get("cutoff_date", ""),
-                r.get("lot_status", "Active"),
-                round(float(r.get("mean_val", 0.0) or 0.0), 3),
-                round(float(r.get("sd_val", 0.0) or 0.0), 4),
-                round(float(r.get("cv_pct", 0.0) or 0.0), 3),
-                int(float(r.get("n_points", 0) or 0)),
-                r.get("notes", ""),
-                r.get("updated_at", now_str),
-            ])
-
-    if not updated_existing:
-        max_id += 1
-        new_rows.append([
-            max_id,
-            clean_inst,
-            norm_code,
-            norm_name,
-            str(unit).strip(),
-            lv_int,
-            level_name,
-            clean_lot,
-            str(start_date).strip(),
-            str(cutoff_date).strip(),
-            str(lot_status).strip(),
-            round(float(mean_val), 3),
-            round(float(sd_val), 4),
-            round(float(cv_pct), 3),
-            int(n_points),
-            str(notes).strip(),
-            now_str,
-        ])
-
-    _retry_gspread(ws.clear)
-    _ensure_ws_capacity(ws, len(new_rows) + 10)
-    _retry_gspread(ws.update, f"A1:Q{len(new_rows)}", new_rows)
+    new_row = [
+        next_id,
+        clean_inst,
+        norm_code,
+        norm_name,
+        str(unit).strip(),
+        lv_int,
+        level_name,
+        clean_lot,
+        str(start_date).strip(),
+        str(cutoff_date).strip(),
+        str(lot_status).strip(),
+        round(float(mean_val), 3),
+        round(float(sd_val), 4),
+        round(float(cv_pct), 3),
+        int(n_points),
+        str(notes).strip(),
+        now_str,
+    ]
+    _ensure_ws_capacity(ws, len(existing) + 10)
+    _retry_gspread(ws.append_row, new_row)
     clear_db_cache()
 
 

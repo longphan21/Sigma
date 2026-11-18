@@ -590,14 +590,15 @@ def render_cv_manager_page():
 
                 act_b1, act_b2, act_b3 = st.columns([1.5, 2.3, 1.2], vertical_alignment="bottom")
                 if act_b1.button(
-                    f":material/save: Save CV% to {active_quarter_period}",
-                    type="primary",
-                    use_container_width=True,
+                        f":material/save: Save CV% to {active_quarter_period}",
+                        type="primary",
+                        use_container_width=True,
                 ):
-                    if any(r["n_lots"] == 0 for r in records_to_save):
+                    valid_records = [r for r in records_to_save if r["n_lots"] > 0]
+                    if not valid_records:
                         queue_popup(
                             "Incomplete Lot Selection",
-                            "Please select at least 1 lot for each QC level before saving.",
+                            "Please select at least 1 lot before saving.",
                             "warning",
                         )
                         st.rerun()
@@ -605,7 +606,7 @@ def render_cv_manager_page():
                         save_cv_summary_records(
                             instrument_name=sel_inst,
                             test_code=sel_test,
-                            level_records=records_to_save,
+                            level_records=valid_records,
                             quarter_period=active_quarter_period,
                         )
                         queue_popup(
