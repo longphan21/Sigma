@@ -365,125 +365,141 @@ def render_sigma_calculator_page():
                 key=f"sig_tea_src_txt_{sel_inst}_{sel_test}_{sel_tea_label}",
             )
 
-        # ======================================================================
-        # STEP 3: SIGMA CALCULATION & WESTGARD RULES BY LEVEL
-        # ======================================================================
-        with st.container(border=True):
-            st.markdown(
-                f"#### :material/verified: 3. Sigma Score & Westgard Rules — **{active_quarter_period}**"
-            )
-
-            lv_cols = st.columns(num_levels)
-            records_to_save = []
-
-            for idx in range(num_levels):
-                lv_no = idx + 1
-                lv_title = level_names[idx]
-
-                # Lấy Bias% mặc định của Level này (nếu chỉ lưu 1 Level ở Bias thì fallback về Level 1)
-                default_bias = 0.0
-                bias_note = "Manual Input"
-                if not sub_bias.empty:
-                    m_b = sub_bias[sub_bias["level_no"] == lv_no]
-                    if m_b.empty:
-                        m_b = sub_bias.iloc[[0]]
-                    default_bias = float(m_b["chosen_bias_pct"].iloc[0] or 0.0)
-                    bias_note = f"Saved ({m_b['selected_batches'].iloc[0]})"
-
-                # Lấy CV% mặc định của Level này
-                default_cv = 2.0
-                cv_note = "Manual Input"
-                if not sub_cv.empty:
-                    m_c = sub_cv[sub_cv["level_no"] == lv_no]
-                    if m_c.empty:
-                        m_c = sub_cv.iloc[[0]]
-                    if pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(m_c["chosen_cv_pct"].iloc[0]) > 0:
-                        default_cv = float(m_c["chosen_cv_pct"].iloc[0])
-                        cv_note = f"Lots: {m_c['selected_lots'].iloc[0]} (N={int(m_c['total_points'].iloc[0] or 0)})"
-
-                with lv_cols[idx]:
-                    st.markdown(f"##### 📌 {lv_title}")
-
-                    in_c1, in_c2 = st.columns(2)
-                    bias_val = in_c1.number_input(
-                        f"|Bias %| ({bias_note})",
-                        min_value=0.0,
-                        max_value=200.0,
-                        value=round(float(default_bias), 3),
-                        step=0.05,
-                        format="%.3f",
-                        key=f"sig_bias_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
+            # ======================================================================
+            # STEP 3: SIGMA CALCULATION & WESTGARD RULES BY LEVEL
+            # ======================================================================
+            with st.container(border=True):
+                hdr_s1, hdr_s2 = st.columns([3.4, 1.6], vertical_alignment="center")
+                with hdr_s1:
+                    st.markdown(
+                        f"#### :material/verified: 3. Sigma Score & Westgard Rules — **{active_quarter_period}**"
                     )
-                    cv_val = in_c2.number_input(
-                        f"CV % ({cv_note})",
-                        min_value=0.001,
-                        max_value=200.0,
-                        value=round(max(0.001, float(default_cv)), 3),
-                        step=0.05,
-                        format="%.3f",
-                        key=f"sig_cv_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
+                with hdr_s2:
+                    allow_manual_override = st.checkbox(
+                        "✏️ Chỉnh tay Bias% / CV%",
+                        value=False,
+                        key=f"sig_manual_override_{active_quarter_period}_{sel_inst}_{sel_test}",
                     )
 
-                    sigma_raw = (float(chosen_tea_pct) - float(bias_val)) / float(cv_val) if float(cv_val) > 0 else 0.0
-                    sigma_2dec = round(sigma_raw, 2)
-                    wg_info = evaluate_westgard_sigma(sigma_2dec, num_levels=num_levels)
+                lv_cols = st.columns(num_levels)
+                records_to_save = []
 
-                    badge_html = format_status_badge_html(wg_info["status_code"])
-                    render_html(f"""
-                    <div class="eval-result-box {wg_info['box_cls']}" style="margin-bottom:8px;">
-                        <span><b>{wg_info['grade']}</b></span>
-                        {badge_html}
-                    </div>
-                    """)
+                for idx in range(num_levels):
+                    lv_no = idx + 1
+                    lv_title = level_names[idx]
 
-                    m_1, m_2 = st.columns([1.0, 1.4])
-                    m_1.metric("Sigma (σ)", f"{sigma_2dec:.2f} σ")
-                    m_2.metric("Westgard Rules", wg_info["rules"])
+                    # Lấy đúng Bias% đã chọn của mức nồng độ này từ Tab 1
+                    default_bias = 0.0
+                    bias_months_info = "Chưa lưu ở Tab 1"
+                    if not sub_bias.empty:
+                        m_b = sub_bias[sub_bias["level_no"] == lv_no]
+                        if not m_b.empty:
+                            default_bias = float(m_b["chosen_bias_pct"].iloc[0] or 0.0)
+                            bias_months_info = str(m_b["selected_batches"].iloc[0] or "-")
 
-                    formula_str = f"({chosen_tea_pct:.2f}% - {bias_val:.3f}%) / {cv_val:.3f}% = {sigma_2dec:.2f}σ"
-                    render_html(f"""
-                    <div class="history-meta-bar">
-                        <span><b>Formula:</b> <code>{formula_str}</code></span>
-                        <span><b>QC Scheme:</b> <b>{wg_info['qc_scheme']}</b></span>
-                    </div>
-                    """)
+                    # Lấy đúng CV% tích lũy đã chọn của mức nồng độ này từ Tab 3
+                    default_cv = 2.0
+                    cv_lots_info = "Chưa lưu ở Tab 3"
+                    if not sub_cv.empty:
+                        m_c = sub_cv[sub_cv["level_no"] == lv_no]
+                        if not m_c.empty and pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(
+                                m_c["chosen_cv_pct"].iloc[0]) > 0:
+                            default_cv = float(m_c["chosen_cv_pct"].iloc[0])
+                            cv_lots_info = f"{m_c['selected_lots'].iloc[0]} (N={int(m_c['total_points'].iloc[0] or 0)})"
 
-                    records_to_save.append({
-                        "instrument_name": sel_inst,
-                        "test_code": sel_test,
-                        "test_full_name": full_name_str,
-                        "unit": unit_str,
-                        "level_no": lv_no,
-                        "level_name": lv_title,
-                        "tea_source": str(chosen_tea_src_final).strip() or "Custom",
-                        "tea_pct": float(chosen_tea_pct),
-                        "bias_pct": float(bias_val),
-                        "cv_pct": float(cv_val),
-                        "sigma_val": sigma_2dec,
-                        "sigma_grade": wg_info["grade"],
-                        "westgard_rules": wg_info["rules"],
-                        "qc_freq_note": wg_info["qc_scheme"],
-                    })
+                    with lv_cols[idx]:
+                        st.markdown(f"##### 📌 {lv_title}")
 
-            btn_col, _ = st.columns([1.6, 3.4])
-            with btn_col:
-                if st.button(
-                    f":material/save: Save Sigma & Westgard to {active_quarter_period}",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    save_sigma_summary_records(
-                        instrument_name=sel_inst,
-                        test_code=sel_test,
-                        level_records=records_to_save,
-                        quarter_period=active_quarter_period,
-                    )
-                    queue_popup(
-                        "Saved Successfully",
-                        f"Saved Sigma & Westgard evaluation for {sel_test} ({sel_inst}) to {active_quarter_period}.",
-                        "success",
-                    )
-                    st.rerun()
+                        if allow_manual_override:
+                            in_c1, in_c2 = st.columns(2)
+                            bias_val = in_c1.number_input(
+                                "Chosen |Bias %|",
+                                min_value=0.0,
+                                max_value=200.0,
+                                value=round(float(default_bias), 3),
+                                step=0.05,
+                                format="%.3f",
+                                key=f"sig_bias_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
+                            )
+                            cv_val = in_c2.number_input(
+                                "Cumulative CV %",
+                                min_value=0.001,
+                                max_value=200.0,
+                                value=round(max(0.001, float(default_cv)), 3),
+                                step=0.05,
+                                format="%.3f",
+                                key=f"sig_cv_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
+                            )
+                        else:
+                            bias_val = round(float(default_bias), 3)
+                            cv_val = round(max(0.001, float(default_cv)), 3)
+                            top_m1, top_m2 = st.columns(2)
+                            top_m1.metric("Chosen |Bias %|", f"{bias_val:.3f}%")
+                            top_m2.metric("Cumulative CV %", f"{cv_val:.3f}%")
+
+                        sigma_raw = (float(chosen_tea_pct) - float(bias_val)) / float(cv_val) if float(
+                            cv_val) > 0 else 0.0
+                        sigma_2dec = round(sigma_raw, 2)
+                        wg_info = evaluate_westgard_sigma(sigma_2dec, num_levels=num_levels)
+
+                        badge_html = format_status_badge_html(wg_info["status_code"])
+                        render_html(f"""
+                            <div class="eval-result-box {wg_info['box_cls']}" style="margin-bottom:8px;">
+                                <span><b>{wg_info['grade']}</b></span>
+                                {badge_html}
+                            </div>
+                            """)
+
+                        m_1, m_2 = st.columns([1.0, 1.4])
+                        m_1.metric("Sigma (σ)", f"{sigma_2dec:.2f} σ")
+                        m_2.metric("Westgard Rules", wg_info["rules"])
+
+                        formula_str = f"({chosen_tea_pct:.2f}% - {bias_val:.3f}%) / {cv_val:.3f}% = {sigma_2dec:.2f}σ"
+                        render_html(f"""
+                            <div class="history-meta-bar">
+                                <span><b>Formula:</b> <code>{formula_str}</code></span>
+                                <span><b>QC Scheme:</b> <b>{wg_info['qc_scheme']}</b></span>
+                                <span><b>Bias Months:</b> <code>{bias_months_info}</code></span>
+                                <span><b>IQC Lots:</b> <code>{cv_lots_info}</code></span>
+                            </div>
+                            """)
+
+                        records_to_save.append({
+                            "instrument_name": sel_inst,
+                            "test_code": sel_test,
+                            "test_full_name": full_name_str,
+                            "unit": unit_str,
+                            "level_no": lv_no,
+                            "level_name": lv_title,
+                            "tea_source": str(chosen_tea_src_final).strip() or "Custom",
+                            "tea_pct": float(chosen_tea_pct),
+                            "bias_pct": float(bias_val),
+                            "cv_pct": float(cv_val),
+                            "sigma_val": sigma_2dec,
+                            "sigma_grade": wg_info["grade"],
+                            "westgard_rules": wg_info["rules"],
+                            "qc_freq_note": wg_info["qc_scheme"],
+                        })
+
+                btn_col, _ = st.columns([1.6, 3.4])
+                with btn_col:
+                    if st.button(
+                            f":material/save: Save Sigma & Westgard to {active_quarter_period}",
+                            type="primary",
+                            use_container_width=True,
+                    ):
+                        save_sigma_summary_records(
+                            instrument_name=sel_inst,
+                            test_code=sel_test,
+                            level_records=records_to_save,
+                            quarter_period=active_quarter_period,
+                        )
+                        queue_popup(
+                            "Saved Successfully",
+                            f"Saved Sigma & Westgard evaluation for {sel_test} ({sel_inst}) to {active_quarter_period}.",
+                            "success",
+                        )
+                        st.rerun()
 
     # ==========================================================================
     # TAB 2: SAVED QUARTERLY SIGMA & WESTGARD SUMMARY (Q1, Q2, Q3, Q4)

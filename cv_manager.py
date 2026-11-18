@@ -24,6 +24,14 @@ QUARTER_OPTIONS: List[Tuple[int, str, int]] = [
 ]
 
 
+def _format_lot_period(start_d: Any, end_d: Any) -> str:
+    s = str(start_d or "").strip()
+    e = str(end_d or "").strip()
+    if s and e:
+        return f"{s} – {e}"
+    return s or e or "-"
+
+
 def _calc_pooled_cv(df_sub: pd.DataFrame) -> Dict[str, Any]:
     """
     Tính CV cộng dồn theo công thức:
@@ -54,7 +62,12 @@ def _calc_pooled_cv(df_sub: pd.DataFrame) -> Dict[str, Any]:
     cv_vals = valid["cv_pct"].astype(float).tolist()
     n_vals = valid["n_points"].astype(int).tolist()
     mean_vals = valid["mean_val"].fillna(0.0).astype(float).tolist()
-    lot_names = valid["lot_no"].astype(str).tolist()
+
+    lot_With_period = []
+    for _, r in valid.iterrows():
+        l_no = str(r.get("lot_no", "")).strip()
+        p_str = _format_lot_period(r.get("start_date", ""), r.get("cutoff_date", ""))
+        lot_With_period.append(f"{l_no} ({p_str})" if p_str != "-" else l_no)
 
     total_n = sum(n_vals)
     weighted_cv_sum = sum(c * n for c, n in zip(cv_vals, n_vals))
@@ -75,7 +88,7 @@ def _calc_pooled_cv(df_sub: pd.DataFrame) -> Dict[str, Any]:
         "total_points": total_n,
         "pooled_cv_3dec": pooled_cv,
         "pooled_mean_3dec": pooled_mean,
-        "lots_str": ", ".join(lot_names),
+        "lots_str": ", ".join(lot_With_period),
         "formula_detail": formula_str,
     }
 
@@ -104,7 +117,7 @@ def _render_cv_quarter_summary_table(
         "level_name": "Level",
         "pooled_mean": "Pooled Mean",
         "n_lots": "Lots",
-        "selected_lots": "Selected Lots",
+        "selected_lots": "Selected Lots (From – To)",
         "total_points": "Total Points (N)",
         "chosen_cv_pct": "Cumulative CV %",
         "updated_at": "Updated",
@@ -317,11 +330,12 @@ def render_cv_manager_page():
             lot_lookup: Dict[str, Dict[str, Any]] = {}
             if not df_test_lots.empty:
                 for _, r in df_test_lots.iterrows():
-                    lbl = f"[L{int(r['level_no'])}] Lot {r['lot_no']} ({r['lot_status']} | n={int(r['n_points'])})"
+                    p_txt = _format_lot_period(r.get("start_date", ""), r.get("cutoff_date", ""))
+                    lbl = f"[L{int(r['level_no'])}] Lot {r['lot_no']} ({p_txt} | {r['lot_status']} | n={int(r['n_points'])})"
                     existing_lot_opts.append(lbl)
                     lot_lookup[lbl] = r.to_dict()
 
-            r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns([1.4, 1.1, 1.1, 1.0, 1.0, 1.0], vertical_alignment="bottom")
+            r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns([1.45, 1.05, 1.0, 0.95, 1.05, 1.05], vertical_alignment="bottom")
 
             sel_edit_mode = r1_c1.selectbox(
                 "Edit Existing / New",
@@ -346,7 +360,7 @@ def render_cv_manager_page():
             lot_no_in = r1_c3.text_input(
                 "Lot No",
                 value=default_lot_str,
-                placeholder="e.g., 45891",
+                placeholder="e.g., 1699UN",
                 key=f"cv_in_lotno_{sel_inst}_{sel_test}_{sel_edit_mode}_{sel_lv_no}",
             )
 
@@ -356,19 +370,19 @@ def render_cv_manager_page():
                 "Lot Status",
                 options=status_opts,
                 index=default_st_idx,
-                format_func=lambda s: "🟢 Active (Running)" if s == "Active" else "🔒 Closed (Ended)",
+                format_func=lambda s: "🟢 Active" if s == "Active" else "🔒 Closed",
                 key=f"cv_in_status_{sel_inst}_{sel_test}_{sel_edit_mode}",
             )
 
-            start_date_in = r1_c5.text_input(
-                "Start Date",
-                value=str(pre.get("start_date", "") or f"01/{sel_year}"),
+            from_date_in = r1_c5.text_input(
+                "From Date (Từ ngày)",
+                value=str(pre.get("start_date", "") or f"01/01/{sel_year}"),
                 placeholder="DD/MM/YYYY",
                 key=f"cv_in_sdate_{sel_inst}_{sel_test}_{sel_edit_mode}",
             )
 
-            cutoff_date_in = r1_c6.text_input(
-                "Cutoff Date",
+            to_date_in = r1_c6.text_input(
+                "To Date (Đến ngày)",
                 value=str(pre.get("cutoff_date", "") or date.today().strftime("%d/%m/%Y")),
                 placeholder="DD/MM/YYYY",
                 key=f"cv_in_cdate_{sel_inst}_{sel_test}_{sel_edit_mode}",
@@ -449,8 +463,8 @@ def render_cv_manager_page():
                         level_no=int(sel_lv_no),
                         level_name=level_names[int(sel_lv_no) - 1],
                         lot_no=str(lot_no_in).strip(),
-                        start_date=start_date_in,
-                        cutoff_date=cutoff_date_in,
+                        start_date=from_date_in,
+                        cutoff_date=to_date_in,
                         lot_status=status_in,
                         mean_val=float(mean_in),
                         sd_val=float(sd_in),
@@ -458,9 +472,10 @@ def render_cv_manager_page():
                         n_points=int(n_points_in),
                         notes="",
                     )
+                    period_saved = _format_lot_period(from_date_in, to_date_in)
                     queue_popup(
                         "Saved Lot Successfully",
-                        f"Saved Lot {lot_no_in} ({level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, n = {int(n_points_in)}) for {sel_test}.",
+                        f"Saved Lot {lot_no_in} ({period_saved} | {level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, n = {int(n_points_in)}).",
                         "success",
                     )
                     st.rerun()
@@ -478,7 +493,12 @@ def render_cv_manager_page():
             for _, s_row in sub_s.iterrows():
                 lv_no = int(s_row.get("level_no", 1) or 1)
                 l_raw = str(s_row.get("selected_lots", ""))
-                l_items = {x.strip() for x in l_raw.split(",") if x.strip() and x.strip() != "-"}
+                # Bóc tách mã Lot kể cả khi chuỗi lưu kèm khoảng thời gian "1699UN (01/01/2026 – 28/09/2026)"
+                l_items = {
+                    x.split("(")[0].strip()
+                    for x in l_raw.split(",")
+                    if x.strip() and x.strip() != "-"
+                }
                 if l_items:
                     saved_lots_by_lv[lv_no] = l_items
 
@@ -513,17 +533,20 @@ def render_cv_manager_page():
                                 "chosen_cv_pct": 0.0,
                             })
                         else:
+                            df_lv_lots["usage_period"] = [
+                                _format_lot_period(r.get("start_date", ""), r.get("cutoff_date", ""))
+                                for _, r in df_lv_lots.iterrows()
+                            ]
                             saved_set = saved_lots_by_lv.get(lv_no, set())
                             if saved_set:
                                 df_lv_lots["use_lot"] = [
                                     str(l_no).strip() in saved_set for l_no in df_lv_lots["lot_no"].tolist()
                                 ]
                             else:
-                                # Mặc định chọn Lot mới nhất (dòng đầu tiên) nếu chưa lưu Quý này
                                 df_lv_lots["use_lot"] = [i == 0 for i in range(len(df_lv_lots))]
 
                             editor_cols = [
-                                "use_lot", "lot_no", "lot_status", "cutoff_date",
+                                "use_lot", "lot_no", "usage_period", "lot_status",
                                 "mean_val", "sd_val", "cv_pct", "n_points"
                             ]
                             edited_lv_df = st.data_editor(
@@ -531,8 +554,8 @@ def render_cv_manager_page():
                                 column_config={
                                     "use_lot": st.column_config.CheckboxColumn("☑️ Use", width="small", default=False),
                                     "lot_no": st.column_config.TextColumn("Lot No", width="small", disabled=True),
+                                    "usage_period": st.column_config.TextColumn("Period (From – To)", width="medium", disabled=True),
                                     "lot_status": st.column_config.TextColumn("Status", width="small", disabled=True),
-                                    "cutoff_date": st.column_config.TextColumn("Cutoff", width="small", disabled=True),
                                     "mean_val": st.column_config.NumberColumn("Mean", format="%.2f", width="small", disabled=True),
                                     "sd_val": st.column_config.NumberColumn("SD", format="%.3f", width="small", disabled=True),
                                     "cv_pct": st.column_config.NumberColumn("CV %", format="%.3f%%", width="small", disabled=True),
@@ -571,7 +594,7 @@ def render_cv_manager_page():
 
                             render_html(f"""
                             <div class="history-meta-bar">
-                                <span><b>Lots:</b> <code>{metrics['lots_str']}</code></span>
+                                <span><b>Lots (From – To):</b> <code>{metrics['lots_str']}</code></span>
                                 <span><b>Formula:</b> <code>{metrics['formula_detail']}</code></span>
                             </div>
                             """)
@@ -591,9 +614,9 @@ def render_cv_manager_page():
 
                 act_b1, act_b2, act_b3 = st.columns([1.5, 2.3, 1.2], vertical_alignment="bottom")
                 if act_b1.button(
-                        f":material/save: Save CV% to {active_quarter_period}",
-                        type="primary",
-                        use_container_width=True,
+                    f":material/save: Save CV% to {active_quarter_period}",
+                    type="primary",
+                    use_container_width=True,
                 ):
                     valid_records = [r for r in records_to_save if r["n_lots"] > 0]
                     if not valid_records:
@@ -618,7 +641,7 @@ def render_cv_manager_page():
                         st.rerun()
 
                 del_lot_map = {
-                    f"[#{int(r['id'])}] {r['level_name']} — Lot {r['lot_no']} (CV={r['cv_pct']:.3f}%, n={int(r['n_points'])})": int(r["id"])
+                    f"[#{int(r['id'])}] {r['level_name']} — Lot {r['lot_no']} ({_format_lot_period(r.get('start_date', ''), r.get('cutoff_date', ''))} | CV={r['cv_pct']:.3f}%)": int(r["id"])
                     for _, r in df_test_lots.iterrows()
                 }
                 sel_del_lot = act_b2.selectbox(
@@ -692,7 +715,7 @@ def render_cv_manager_page():
                             "level_name": "Level",
                             "pooled_mean": "Pooled Mean",
                             "n_lots": "Lots",
-                            "selected_lots": "Selected Lots",
+                            "selected_lots": "Selected Lots (From – To)",
                             "total_points": "Total Points (N)",
                             "chosen_cv_pct": "Cumulative CV %",
                             "updated_at": "Updated",
