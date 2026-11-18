@@ -4,6 +4,8 @@ import pandas as pd
 from bias_calculator import render_bias_calculator_page
 from tea_manager import render_tea_manager_page
 from cv_manager import render_cv_manager_page
+from sigma_calculator import render_sigma_calculator_page
+
 from ui_theme import (
     init_theme,
     render_sidebar_menu,
@@ -319,7 +321,4 @@ elif page == "3. Cumulative CV":
 # TAB 4: PLACEHOLDER FOR STAGE 3
 # ==============================================================================
 elif page == "4. Sigma & Westgard":
-    render_page_banner(page)
-    with st.container(border=True):
-        st.markdown(f"#### :material/construction: {page}")
-        st.write("Module này sẽ được triển khai ở Chặng 3.")
+    render_sigma_calculator_page()
