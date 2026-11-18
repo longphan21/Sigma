@@ -706,10 +706,37 @@ def delete_tea_standard(record_id: int):
 # ==============================================================================
 # IQC LOTS & CUMULATIVE CV SUMMARY STORAGE (iqc_lots, iqc_cv_summary)
 # ==============================================================================
+def _ensure_ws_headers(ws, expected_headers: List[str]) -> List[List[Any]]:
+    """Đảm bảo dòng 1 của Sheet luôn là expected_headers; tự động chèn lại nếu bị mất header."""
+    all_vals = _retry_gspread(ws.get_all_values)
+    if not all_vals:
+        _retry_gspread(ws.append_row, list(expected_headers))
+        return [list(expected_headers)]
+
+    first_row = [str(c).strip() for c in all_vals[0]]
+    if not any(first_row):
+        _retry_gspread(ws.delete_rows, 1)
+        return _ensure_ws_headers(ws, expected_headers)
+
+    # Nếu dòng 1 là dữ liệu (cột đầu tiên không phải 'id') do mất dòng tiêu đề trước đó
+    if first_row[0].lower() != "id":
+        _retry_gspread(ws.insert_row, list(expected_headers), 1)
+        all_vals.insert(0, list(expected_headers))
+        return all_vals
+
+    # Nếu dòng 1 là tiêu đề cũ nhưng khác số cột hiện tại
+    if first_row != expected_headers:
+        _retry_gspread(ws.insert_row, list(expected_headers), 1)
+        _retry_gspread(ws.delete_rows, 2)
+        all_vals[0] = list(expected_headers)
+
+    return all_vals
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def get_all_iqc_lots() -> pd.DataFrame:
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
-    all_vals = _retry_gspread(ws.get_all_values)
+    all_vals = _ensure_ws_headers(ws, IQC_LOTS_HEADERS)
     records = _values_to_records(all_vals, IQC_LOTS_HEADERS)
     if not records:
         return pd.DataFrame(columns=IQC_LOTS_HEADERS)
@@ -720,15 +747,18 @@ def get_all_iqc_lots() -> pd.DataFrame:
         r["test_full_name"] = norm_n or norm_c
 
     df = pd.DataFrame(records)
+    for col in IQC_LOTS_HEADERS:
+        if col not in df.columns:
+            df[col] = ""
+
     num_cols = ["id", "level_no", "mean_val", "sd_val", "cv_pct", "n_points"]
     for c in num_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["id"] = df["id"].fillna(0).astype(int)
     df["level_no"] = df["level_no"].fillna(1).astype(int)
     df["n_points"] = df["n_points"].fillna(0).astype(int)
-    return df.sort_values(
+    return df[IQC_LOTS_HEADERS].sort_values(
         by=["instrument_name", "test_code", "level_no", "id"],
         ascending=[True, True, True, False],
     ).reset_index(drop=True)
@@ -752,7 +782,7 @@ def save_iqc_lot(
     notes: str = "",
 ):
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
-    all_vals = _retry_gspread(ws.get_all_values)
+    all_vals = _ensure_ws_headers(ws, IQC_LOTS_HEADERS)
     norm_code, norm_name = normalize_test_info(test_code, test_full_name)
     norm_name = norm_name or norm_code
     clean_inst = str(instrument_name).strip()
@@ -781,7 +811,7 @@ def save_iqc_lot(
             ):
                 _retry_gspread(ws.delete_rows, i + 1)
 
-    after_vals = _retry_gspread(ws.get_all_values)
+    after_vals = _ensure_ws_headers(ws, IQC_LOTS_HEADERS)
     existing = _values_to_records(after_vals, IQC_LOTS_HEADERS)
     next_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0) + 1
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -808,7 +838,6 @@ def save_iqc_lot(
     _ensure_ws_capacity(ws, len(existing) + 10)
     _retry_gspread(ws.append_row, new_row)
     clear_db_cache()
-
 
 def delete_iqc_lot(record_id: int):
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)

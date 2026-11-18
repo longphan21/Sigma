@@ -342,11 +342,12 @@ def render_cv_manager_page():
                 key=f"cv_in_lv_{sel_inst}_{sel_test}_{sel_edit_mode}",
             )
 
+            default_lot_str = str(pre.get("lot_no", "")).strip() or f"LOT-L{sel_lv_no}"
             lot_no_in = r1_c3.text_input(
                 "Lot No",
-                value=str(pre.get("lot_no", "")),
+                value=default_lot_str,
                 placeholder="e.g., 45891",
-                key=f"cv_in_lotno_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                key=f"cv_in_lotno_{sel_inst}_{sel_test}_{sel_edit_mode}_{sel_lv_no}",
             )
 
             status_opts = ["Active", "Closed"]
