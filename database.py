@@ -706,7 +706,7 @@ def delete_tea_standard(record_id: int):
 # ==============================================================================
 # IQC LOTS & CUMULATIVE CV SUMMARY STORAGE (iqc_lots, iqc_cv_summary)
 # ==============================================================================
-ddef _ensure_ws_headers(ws, expected_headers: List[str]) -> List[List[Any]]:
+def _ensure_ws_headers(ws, expected_headers: List[str]) -> List[List[Any]]:
     """Đảm bảo dòng 1 của Sheet luôn là expected_headers; tự động chèn lại nếu bị mất header."""
     all_vals = _retry_gspread(ws.get_all_values)
     if not all_vals:
