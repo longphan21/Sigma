@@ -30,6 +30,17 @@ TEA_HEADERS = [
     "tea_source", "tea_pct", "is_default", "notes", "updated_at"
 ]
 
+IQC_LOTS_HEADERS = [
+    "id", "instrument_name", "test_code", "test_full_name", "unit",
+    "level_no", "level_name", "lot_no", "start_date", "cutoff_date",
+    "lot_status", "mean_val", "sd_val", "cv_pct", "n_points", "notes", "updated_at"
+]
+CV_SUMMARY_HEADERS = [
+    "id", "quarter_period", "instrument_name", "test_code", "unit",
+    "level_no", "level_name", "n_lots", "selected_lots", "total_points",
+    "pooled_mean", "chosen_cv_pct", "updated_at"
+]
+
 def normalize_test_info(test_code: str, test_full_name: str = "") -> Tuple[str, str]:
     """Unify GOT -> AST and GPT -> ALT across both new and existing records."""
     c_up = str(test_code or "").strip().upper()
@@ -136,6 +147,8 @@ def init_database():
     get_ws("eqa_results", RESULTS_HEADERS)
     get_ws("eqa_bias_summary", BIAS_SUMMARY_HEADERS)
     get_ws("tea_standards", TEA_HEADERS)
+    get_ws("iqc_lots", IQC_LOTS_HEADERS)
+    get_ws("iqc_cv_summary", CV_SUMMARY_HEADERS)
     return True
 
 
@@ -658,4 +671,292 @@ def delete_tea_standard(record_id: int):
             if str(all_vals[i][id_idx]).strip() == str(record_id).strip():
                 _retry_gspread(ws.delete_rows, i + 1)
                 break
+    clear_db_cache()
+
+# ==============================================================================
+# IQC LOTS & CUMULATIVE CV SUMMARY STORAGE (iqc_lots, iqc_cv_summary)
+# ==============================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_iqc_lots() -> pd.DataFrame:
+    ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    records = _values_to_records(all_vals, IQC_LOTS_HEADERS)
+    if not records:
+        return pd.DataFrame(columns=IQC_LOTS_HEADERS)
+
+    for r in records:
+        norm_c, norm_n = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
+        r["test_code"] = norm_c
+        r["test_full_name"] = norm_n or norm_c
+
+    df = pd.DataFrame(records)
+    num_cols = ["id", "level_no", "mean_val", "sd_val", "cv_pct", "n_points"]
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["id"] = df["id"].fillna(0).astype(int)
+    df["level_no"] = df["level_no"].fillna(1).astype(int)
+    df["n_points"] = df["n_points"].fillna(0).astype(int)
+    return df.sort_values(
+        by=["instrument_name", "test_code", "level_no", "id"],
+        ascending=[True, True, True, False],
+    ).reset_index(drop=True)
+
+
+def save_iqc_lot(
+    instrument_name: str,
+    test_code: str,
+    test_full_name: str,
+    unit: str,
+    level_no: int,
+    level_name: str,
+    lot_no: str,
+    start_date: str,
+    cutoff_date: str,
+    lot_status: str,
+    mean_val: float,
+    sd_val: float,
+    cv_pct: float,
+    n_points: int,
+    notes: str = "",
+):
+    ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    existing = _values_to_records(all_vals, IQC_LOTS_HEADERS)
+
+    norm_code, norm_name = normalize_test_info(test_code, test_full_name)
+    norm_name = norm_name or norm_code
+    clean_inst = str(instrument_name).strip()
+    clean_lot = str(lot_no).strip()
+    lv_int = int(level_no)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    updated_existing = False
+    max_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0)
+
+    new_rows = [IQC_LOTS_HEADERS]
+    for r in existing:
+        r_id = int(r["id"]) if str(r.get("id", "")).isdigit() else 0
+        r_inst = str(r.get("instrument_name", "")).strip()
+        r_code, r_fname = normalize_test_info(r.get("test_code", ""), r.get("test_full_name", ""))
+        r_lv = int(float(r.get("level_no", 1) or 1))
+        r_lot = str(r.get("lot_no", "")).strip()
+
+        if (
+            r_inst.lower() == clean_inst.lower()
+            and r_code.upper() == norm_code.upper()
+            and r_lv == lv_int
+            and r_lot.lower() == clean_lot.lower()
+        ):
+            updated_existing = True
+            new_rows.append([
+                r_id,
+                clean_inst,
+                norm_code,
+                norm_name or r_fname,
+                str(unit).strip() or r.get("unit", ""),
+                lv_int,
+                level_name,
+                clean_lot,
+                str(start_date).strip(),
+                str(cutoff_date).strip(),
+                str(lot_status).strip(),
+                round(float(mean_val), 3),
+                round(float(sd_val), 4),
+                round(float(cv_pct), 3),
+                int(n_points),
+                str(notes).strip(),
+                now_str,
+            ])
+        else:
+            new_rows.append([
+                r_id,
+                r_inst,
+                r_code,
+                r_fname or r_code,
+                r.get("unit", ""),
+                r_lv,
+                r.get("level_name", f"Level {r_lv}"),
+                r_lot,
+                r.get("start_date", ""),
+                r.get("cutoff_date", ""),
+                r.get("lot_status", "Active"),
+                round(float(r.get("mean_val", 0.0) or 0.0), 3),
+                round(float(r.get("sd_val", 0.0) or 0.0), 4),
+                round(float(r.get("cv_pct", 0.0) or 0.0), 3),
+                int(float(r.get("n_points", 0) or 0)),
+                r.get("notes", ""),
+                r.get("updated_at", now_str),
+            ])
+
+    if not updated_existing:
+        max_id += 1
+        new_rows.append([
+            max_id,
+            clean_inst,
+            norm_code,
+            norm_name,
+            str(unit).strip(),
+            lv_int,
+            level_name,
+            clean_lot,
+            str(start_date).strip(),
+            str(cutoff_date).strip(),
+            str(lot_status).strip(),
+            round(float(mean_val), 3),
+            round(float(sd_val), 4),
+            round(float(cv_pct), 3),
+            int(n_points),
+            str(notes).strip(),
+            now_str,
+        ])
+
+    _retry_gspread(ws.clear)
+    _ensure_ws_capacity(ws, len(new_rows) + 10)
+    _retry_gspread(ws.update, f"A1:Q{len(new_rows)}", new_rows)
+    clear_db_cache()
+
+
+def delete_iqc_lot(record_id: int):
+    ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    if len(all_vals) > 1:
+        id_idx = all_vals[0].index("id") if "id" in all_vals[0] else 0
+        for i in range(len(all_vals) - 1, 0, -1):
+            if str(all_vals[i][id_idx]).strip() == str(record_id).strip():
+                _retry_gspread(ws.delete_rows, i + 1)
+                break
+    clear_db_cache()
+
+
+def save_cv_summary_records(
+    instrument_name: str,
+    test_code: str,
+    level_records: List[Dict[str, Any]],
+    quarter_period: str = "Q1/2026",
+):
+    ws = get_ws("iqc_cv_summary", CV_SUMMARY_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    norm_code, _ = normalize_test_info(test_code, "")
+    q_clean = _normalize_quarter_str(quarter_period)
+
+    if len(all_vals) > 1:
+        headers = all_vals[0]
+        q_idx = headers.index("quarter_period") if "quarter_period" in headers else 1
+        inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 2
+        test_idx = headers.index("test_code") if "test_code" in headers else 3
+        upd_idx = headers.index("updated_at") if "updated_at" in headers else 12
+
+        rows_to_del = []
+        for i in range(len(all_vals) - 1, 0, -1):
+            row_i = all_vals[i]
+            r_inst = str(row_i[inst_idx]).strip().lower() if inst_idx < len(row_i) else ""
+            r_test, _ = normalize_test_info(row_i[test_idx] if test_idx < len(row_i) else "", "")
+            r_q = _normalize_quarter_str(
+                row_i[q_idx] if q_idx < len(row_i) else "",
+                row_i[upd_idx] if upd_idx < len(row_i) else "",
+            )
+            if (
+                r_inst == instrument_name.strip().lower()
+                and r_test.upper() == norm_code.upper()
+                and r_q.lower() == q_clean.lower()
+            ):
+                rows_to_del.append(i + 1)
+
+        if rows_to_del:
+            min_r, max_r = min(rows_to_del), max(rows_to_del)
+            if max_r - min_r + 1 == len(rows_to_del):
+                _retry_gspread(ws.delete_rows, min_r, max_r)
+            else:
+                for r_idx in rows_to_del:
+                    _retry_gspread(ws.delete_rows, r_idx)
+
+    after_vals = _retry_gspread(ws.get_all_values)
+    existing = _values_to_records(after_vals, CV_SUMMARY_HEADERS)
+    next_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    rows_to_add = []
+    for rec in level_records:
+        next_id += 1
+        rows_to_add.append([
+            next_id,
+            q_clean,
+            rec.get("instrument_name", instrument_name),
+            norm_code,
+            rec.get("unit", ""),
+            int(rec.get("level_no", 1) or 1),
+            rec.get("level_name", "Level 1 (LOW)"),
+            int(rec.get("n_lots", 0) or 0),
+            rec.get("selected_lots", ""),
+            int(rec.get("total_points", 0) or 0),
+            round(float(rec.get("pooled_mean", 0.0) or 0.0), 3),
+            round(float(rec.get("chosen_cv_pct", 0.0) or 0.0), 3),
+            now_str,
+        ])
+
+    if rows_to_add:
+        _ensure_ws_capacity(ws, len(existing) + len(rows_to_add) + 10)
+        _retry_gspread(ws.append_rows, rows_to_add)
+    clear_db_cache()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_cv_summaries() -> pd.DataFrame:
+    ws = get_ws("iqc_cv_summary", CV_SUMMARY_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    records = _values_to_records(all_vals, CV_SUMMARY_HEADERS)
+    if not records:
+        return pd.DataFrame(columns=CV_SUMMARY_HEADERS)
+
+    for r in records:
+        norm_c, _ = normalize_test_info(r.get("test_code", ""), "")
+        r["test_code"] = norm_c
+        r["quarter_period"] = _normalize_quarter_str(r.get("quarter_period", ""), r.get("updated_at", ""))
+
+    df = pd.DataFrame(records)
+    num_cols = ["level_no", "n_lots", "total_points", "pooled_mean", "chosen_cv_pct"]
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.sort_values(
+        by=["quarter_period", "instrument_name", "test_code", "level_no"],
+        ascending=[True, True, True, True],
+    ).reset_index(drop=True)
+
+
+def delete_cv_summary_by_test(
+    test_code: str,
+    instrument_name: Optional[str] = None,
+    quarter_period: Optional[str] = None,
+):
+    ws = get_ws("iqc_cv_summary", CV_SUMMARY_HEADERS)
+    all_vals = _retry_gspread(ws.get_all_values)
+    norm_code, _ = normalize_test_info(test_code, "")
+    target_q = _normalize_quarter_str(quarter_period) if quarter_period else None
+
+    if len(all_vals) > 1:
+        headers = all_vals[0]
+        q_idx = headers.index("quarter_period") if "quarter_period" in headers else 1
+        inst_idx = headers.index("instrument_name") if "instrument_name" in headers else 2
+        test_idx = headers.index("test_code") if "test_code" in headers else 3
+        upd_idx = headers.index("updated_at") if "updated_at" in headers else 12
+
+        for i in range(len(all_vals) - 1, 0, -1):
+            row_i = all_vals[i]
+            r_test, _ = normalize_test_info(row_i[test_idx] if test_idx < len(row_i) else "", "")
+            match_test = r_test.upper() == norm_code.upper()
+            match_inst = (
+                True
+                if not instrument_name
+                else str(row_i[inst_idx]).strip().lower() == instrument_name.strip().lower()
+            )
+            r_q = _normalize_quarter_str(
+                row_i[q_idx] if q_idx < len(row_i) else "",
+                row_i[upd_idx] if upd_idx < len(row_i) else "",
+            )
+            match_q = True if not target_q else r_q.lower() == target_q.lower()
+            if match_test and match_inst and match_q:
+                _retry_gspread(ws.delete_rows, i + 1)
     clear_db_cache()
