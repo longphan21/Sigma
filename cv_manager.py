@@ -1,6 +1,6 @@
 import io
 from datetime import datetime, date
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 import streamlit as st
 
@@ -23,6 +23,10 @@ QUARTER_OPTIONS: List[Tuple[int, str, int]] = [
     (4, "Q4 (Dec)", 12),
 ]
 
+HEMATOLOGY_NULL_DEFAULT_TESTS = {
+    "HB", "HGB", "RBC", "RBC-OPT", "WBC", "PLT", "PLT-OPT", "HCT", "MCV", "MCH", "MCHC"
+}
+
 
 def _format_lot_period(start_d: Any, end_d: Any) -> str:
     s = str(start_d or "").strip()
@@ -32,63 +36,93 @@ def _format_lot_period(start_d: Any, end_d: Any) -> str:
     return s or e or "-"
 
 
+def _is_valid_pos_num(val: Any) -> bool:
+    if val is None or pd.isna(val):
+        return False
+    try:
+        return float(val) > 0
+    except (ValueError, TypeError):
+        return False
+
+
 def _calc_pooled_cv(df_sub: pd.DataFrame) -> Dict[str, Any]:
     """
-    Tính CV cộng dồn theo công thức:
-    CV_cộng_dồn = [(CV_1 * n_1) + (CV_2 * n_2) + ...] / (n_1 + n_2 + ...)
+    Tính CV cộng dồn:
+    - Nếu các Lot đều có số điểm n > 0: CV_cộng_dồn = Σ(CV_i * n_i) / Σ(n_i)
+    - Nếu Lot thuộc nhóm Huyết học (Mean, SD, n = Null): lấy trực tiếp CV% (1 lot) hoặc trung bình cộng CV% (nhiều lot).
     """
     if df_sub.empty:
         return {
             "n_lots": 0,
             "total_points": 0,
             "pooled_cv_3dec": 0.0,
-            "pooled_mean_3dec": 0.0,
+            "pooled_mean_3dec": None,
             "lots_str": "-",
             "formula_detail": "-",
         }
 
-    valid = df_sub.dropna(subset=["cv_pct", "n_points"]).copy()
-    valid = valid[valid["n_points"] > 0]
+    valid = df_sub.dropna(subset=["cv_pct"]).copy()
+    valid = valid[valid["cv_pct"] > 0]
     if valid.empty:
         return {
             "n_lots": 0,
             "total_points": 0,
             "pooled_cv_3dec": 0.0,
-            "pooled_mean_3dec": 0.0,
+            "pooled_mean_3dec": None,
             "lots_str": "-",
             "formula_detail": "-",
         }
 
     cv_vals = valid["cv_pct"].astype(float).tolist()
-    n_vals = valid["n_points"].astype(int).tolist()
-    mean_vals = valid["mean_val"].fillna(0.0).astype(float).tolist()
+    n_raw_list = valid["n_points"].tolist()
+    mean_raw_list = valid["mean_val"].tolist()
 
-    lot_With_period = []
+    lot_with_period = []
     for _, r in valid.iterrows():
         l_no = str(r.get("lot_no", "")).strip()
         p_str = _format_lot_period(r.get("start_date", ""), r.get("cutoff_date", ""))
-        lot_With_period.append(f"{l_no} ({p_str})" if p_str != "-" else l_no)
+        lot_with_period.append(f"{l_no} ({p_str})" if p_str != "-" else l_no)
 
-    total_n = sum(n_vals)
-    weighted_cv_sum = sum(c * n for c, n in zip(cv_vals, n_vals))
-    weighted_mean_sum = sum(m * n for m, n in zip(mean_vals, n_vals))
+    all_have_n = all(_is_valid_pos_num(n_v) for n_v in n_raw_list)
 
-    pooled_cv = round(weighted_cv_sum / total_n, 3) if total_n > 0 else 0.0
-    pooled_mean = round(weighted_mean_sum / total_n, 3) if total_n > 0 else 0.0
+    if all_have_n:
+        n_vals = [int(float(n_v)) for n_v in n_raw_list]
+        total_n: Optional[int] = sum(n_vals)
+        weighted_cv_sum = sum(c * n for c, n in zip(cv_vals, n_vals))
+        pooled_cv = round(weighted_cv_sum / total_n, 3) if total_n and total_n > 0 else 0.0
 
-    if len(cv_vals) == 1:
-        formula_str = f"{cv_vals[0]:.3f}% (n={n_vals[0]})"
+        valid_means = [(float(m), n) for m, n in zip(mean_raw_list, n_vals) if _is_valid_pos_num(m)]
+        if valid_means:
+            m_sum = sum(m * n for m, n in valid_means)
+            n_m_sum = sum(n for _, n in valid_means)
+            pooled_mean: Optional[float] = round(m_sum / n_m_sum, 3) if n_m_sum > 0 else None
+        else:
+            pooled_mean = None
+
+        if len(cv_vals) == 1:
+            formula_str = f"{cv_vals[0]:.3f}% (n={n_vals[0]})"
+        else:
+            num_terms = " + ".join([f"({c:.3f}% × {n})" for c, n in zip(cv_vals, n_vals)])
+            den_terms = " + ".join([str(n) for n in n_vals])
+            formula_str = f"[{num_terms}] / ({den_terms}) = {pooled_cv:.3f}%"
     else:
-        num_terms = " + ".join([f"({c:.3f}% × {n})" for c, n in zip(cv_vals, n_vals)])
-        den_terms = " + ".join([str(n) for n in n_vals])
-        formula_str = f"[{num_terms}] / ({den_terms}) = {pooled_cv:.3f}%"
+        total_n = None
+        pooled_cv = round(sum(cv_vals) / len(cv_vals), 3)
+        valid_m_only = [float(m) for m in mean_raw_list if _is_valid_pos_num(m)]
+        pooled_mean = round(sum(valid_m_only) / len(valid_m_only), 3) if valid_m_only else None
+
+        if len(cv_vals) == 1:
+            formula_str = f"{cv_vals[0]:.3f}% (Mean/SD/n = Null)"
+        else:
+            terms = " + ".join([f"{c:.3f}%" for c in cv_vals])
+            formula_str = f"({terms}) / {len(cv_vals)} = {pooled_cv:.3f}% (n = Null)"
 
     return {
         "n_lots": len(valid),
         "total_points": total_n,
         "pooled_cv_3dec": pooled_cv,
         "pooled_mean_3dec": pooled_mean,
-        "lots_str": ", ".join(lot_With_period),
+        "lots_str": ", ".join(lot_with_period),
         "formula_detail": formula_str,
     }
 
@@ -106,8 +140,9 @@ def _render_cv_quarter_summary_table(
         "quarter_period", "instrument_name", "test_code", "unit", "level_name",
         "pooled_mean", "n_lots", "selected_lots", "total_points", "chosen_cv_pct", "updated_at"
     ]].copy()
-    df_show["pooled_mean"] = df_show["pooled_mean"].round(3)
-    df_show["chosen_cv_pct"] = df_show["chosen_cv_pct"].round(3)
+    df_show["pooled_mean"] = pd.to_numeric(df_show["pooled_mean"], errors="coerce").round(3)
+    df_show["total_points"] = pd.to_numeric(df_show["total_points"], errors="coerce")
+    df_show["chosen_cv_pct"] = pd.to_numeric(df_show["chosen_cv_pct"], errors="coerce").round(3)
 
     df_display = df_show.rename(columns={
         "quarter_period": "Quarter",
@@ -127,6 +162,7 @@ def _render_cv_quarter_summary_table(
         df_display,
         column_config={
             "Pooled Mean": st.column_config.NumberColumn("Pooled Mean", format="%.3f"),
+            "Total Points (N)": st.column_config.NumberColumn("Total Points (N)", format="%d"),
             "Cumulative CV %": st.column_config.NumberColumn("Cumulative CV %", format="%.3f%%"),
         },
         use_container_width=True,
@@ -202,7 +238,7 @@ def render_cv_manager_page():
         # ======================================================================
         with st.container(border=True):
             st.markdown("#### :material/tune: 1. Configuration")
-            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.95, 0.75, 1.35, 1.85, 0.9], vertical_alignment="bottom")
+            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.85, 0.65, 1.70, 1.80, 0.80], vertical_alignment="bottom")
 
             q_idx_map = {q_no: label for q_no, label, _ in QUARTER_OPTIONS}
             sel_q_no = c_q.selectbox(
@@ -331,7 +367,8 @@ def render_cv_manager_page():
             if not df_test_lots.empty:
                 for _, r in df_test_lots.iterrows():
                     p_txt = _format_lot_period(r.get("start_date", ""), r.get("cutoff_date", ""))
-                    lbl = f"[L{int(r['level_no'])}] Lot {r['lot_no']} ({p_txt} | {r['lot_status']} | n={int(r['n_points'])})"
+                    n_txt = f"n={int(r['n_points'])}" if _is_valid_pos_num(r.get("n_points")) else "n=Null"
+                    lbl = f"[L{int(r['level_no'])}] Lot {r['lot_no']} ({p_txt} | {r['lot_status']} | {n_txt})"
                     existing_lot_opts.append(lbl)
                     lot_lookup[lbl] = r.to_dict()
 
@@ -388,46 +425,41 @@ def render_cv_manager_page():
                 key=f"cv_in_cdate_{sel_inst}_{sel_test}_{sel_edit_mode}",
             )
 
-            r2_c1, r2_c2, r2_c3, r2_c4, r2_c5, r2_c6 = st.columns([1.1, 1.0, 1.0, 1.0, 1.3, 1.2], vertical_alignment="bottom")
+            r2_c1, r2_c2, r2_c3, r2_c4, r2_c5, r2_c6 = st.columns([1.25, 0.95, 0.95, 0.95, 1.2, 1.2], vertical_alignment="bottom")
+
+            mode_options = [
+                "Auto (SD/Mean)",
+                "Manual CV%",
+                "CV% Only (Null Mean/SD/n)",
+            ]
+            if pre:
+                default_mode_idx = 2 if not _is_valid_pos_num(pre.get("n_points")) else 0
+            else:
+                default_mode_idx = 2 if sel_test.strip().upper() in HEMATOLOGY_NULL_DEFAULT_TESTS else 0
 
             calc_mode = r2_c1.selectbox(
                 "CV% Input Mode",
-                options=["Auto (SD/Mean)", "Manual CV%"],
-                key=f"cv_calc_mode_{sel_inst}_{sel_test}",
+                options=mode_options,
+                index=default_mode_idx,
+                key=f"cv_calc_mode_{sel_inst}_{sel_test}_{sel_edit_mode}",
             )
 
-            mean_in = r2_c2.number_input(
-                f"Mean ({unit_str or 'val'})",
-                min_value=0.0,
-                max_value=1000000.0,
-                value=float(pre.get("mean_val", 100.0) or 100.0),
-                step=0.1,
-                format="%.3f",
-                key=f"cv_in_mean_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
+            is_null_mode = (calc_mode == "CV% Only (Null Mean/SD/n)")
 
-            sd_in = r2_c3.number_input(
-                f"SD ({unit_str or 'val'})",
-                min_value=0.0,
-                max_value=100000.0,
-                value=float(pre.get("sd_val", 2.0) or 2.0),
-                step=0.01,
-                format="%.4f",
-                key=f"cv_in_sd_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
-
-            auto_cv = round((sd_in / mean_in) * 100.0, 3) if mean_in > 0 else 0.0
-            default_manual_cv = float(pre.get("cv_pct", auto_cv) or auto_cv)
-
-            if calc_mode == "Auto (SD/Mean)":
-                cv_in = r2_c4.number_input(
-                    "CV % (Auto)",
-                    value=float(auto_cv),
-                    format="%.3f",
+            if is_null_mode:
+                r2_c2.text_input(
+                    f"Mean ({unit_str or 'val'})",
+                    value="Null",
                     disabled=True,
-                    key=f"cv_in_cv_auto_{sel_inst}_{sel_test}_{mean_in}_{sd_in}",
+                    key=f"cv_null_mean_{sel_inst}_{sel_test}_{sel_edit_mode}",
                 )
-            else:
+                r2_c3.text_input(
+                    f"SD ({unit_str or 'val'})",
+                    value="Null",
+                    disabled=True,
+                    key=f"cv_null_sd_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                )
+                default_manual_cv = float(pre.get("cv_pct", 2.0) or 2.0) if _is_valid_pos_num(pre.get("cv_pct")) else 2.0
                 cv_in = r2_c4.number_input(
                     "CV % (Manual)",
                     min_value=0.001,
@@ -435,17 +467,75 @@ def render_cv_manager_page():
                     value=max(0.001, default_manual_cv),
                     step=0.05,
                     format="%.3f",
-                    key=f"cv_in_cv_man_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key=f"cv_in_cv_nullmode_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                )
+                r2_c5.text_input(
+                    "Total QC Points (n)",
+                    value="Null",
+                    disabled=True,
+                    key=f"cv_null_n_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                )
+                mean_to_save: Optional[float] = None
+                sd_to_save: Optional[float] = None
+                n_to_save: Optional[int] = None
+            else:
+                pre_mean = float(pre.get("mean_val")) if _is_valid_pos_num(pre.get("mean_val")) else 100.0
+                pre_sd = float(pre.get("sd_val")) if _is_valid_pos_num(pre.get("sd_val")) else 2.0
+                pre_n = int(float(pre.get("n_points"))) if _is_valid_pos_num(pre.get("n_points")) else 20
+
+                mean_in = r2_c2.number_input(
+                    f"Mean ({unit_str or 'val'})",
+                    min_value=0.0,
+                    max_value=1000000.0,
+                    value=pre_mean,
+                    step=0.1,
+                    format="%.3f",
+                    key=f"cv_in_mean_{sel_inst}_{sel_test}_{sel_edit_mode}",
                 )
 
-            n_points_in = r2_c5.number_input(
-                "Total QC Points (n)",
-                min_value=1,
-                max_value=10000,
-                value=max(1, int(pre.get("n_points", 20) or 20)),
-                step=1,
-                key=f"cv_in_n_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
+                sd_in = r2_c3.number_input(
+                    f"SD ({unit_str or 'val'})",
+                    min_value=0.0,
+                    max_value=100000.0,
+                    value=pre_sd,
+                    step=0.01,
+                    format="%.4f",
+                    key=f"cv_in_sd_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                )
+
+                auto_cv = round((sd_in / mean_in) * 100.0, 3) if mean_in > 0 else 0.0
+                default_manual_cv = float(pre.get("cv_pct", auto_cv) or auto_cv) if _is_valid_pos_num(pre.get("cv_pct")) else auto_cv
+
+                if calc_mode == "Auto (SD/Mean)":
+                    cv_in = r2_c4.number_input(
+                        "CV % (Auto)",
+                        value=float(auto_cv),
+                        format="%.3f",
+                        disabled=True,
+                        key=f"cv_in_cv_auto_{sel_inst}_{sel_test}_{mean_in}_{sd_in}",
+                    )
+                else:
+                    cv_in = r2_c4.number_input(
+                        "CV % (Manual)",
+                        min_value=0.001,
+                        max_value=200.0,
+                        value=max(0.001, default_manual_cv),
+                        step=0.05,
+                        format="%.3f",
+                        key=f"cv_in_cv_man_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    )
+
+                n_points_in = r2_c5.number_input(
+                    "Total QC Points (n)",
+                    min_value=1,
+                    max_value=10000,
+                    value=max(1, pre_n),
+                    step=1,
+                    key=f"cv_in_n_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                )
+                mean_to_save = float(mean_in)
+                sd_to_save = float(sd_in)
+                n_to_save = int(n_points_in)
 
             if r2_c6.button(":material/save: Save Lot Data", type="primary", use_container_width=True):
                 if not str(lot_no_in).strip():
@@ -466,16 +556,17 @@ def render_cv_manager_page():
                         start_date=from_date_in,
                         cutoff_date=to_date_in,
                         lot_status=status_in,
-                        mean_val=float(mean_in),
-                        sd_val=float(sd_in),
+                        mean_val=mean_to_save,
+                        sd_val=sd_to_save,
                         cv_pct=float(cv_in),
-                        n_points=int(n_points_in),
-                        notes="",
+                        n_points=n_to_save,
+                        notes="Null Mean/SD/n" if is_null_mode else "",
                     )
                     period_saved = _format_lot_period(from_date_in, to_date_in)
+                    n_msg = "n=Null" if n_to_save is None else f"n={n_to_save}"
                     queue_popup(
                         "Saved Lot Successfully",
-                        f"Saved Lot {lot_no_in} ({period_saved} | {level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, n = {int(n_points_in)}).",
+                        f"Saved Lot {lot_no_in} ({period_saved} | {level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, {n_msg}).",
                         "success",
                     )
                     st.rerun()
@@ -493,7 +584,6 @@ def render_cv_manager_page():
             for _, s_row in sub_s.iterrows():
                 lv_no = int(s_row.get("level_no", 1) or 1)
                 l_raw = str(s_row.get("selected_lots", ""))
-                # Bóc tách mã Lot kể cả khi chuỗi lưu kèm khoảng thời gian "1699UN (01/01/2026 – 28/09/2026)"
                 l_items = {
                     x.split("(")[0].strip()
                     for x in l_raw.split(",")
@@ -528,8 +618,8 @@ def render_cv_manager_page():
                                 "level_name": lv_title,
                                 "n_lots": 0,
                                 "selected_lots": "-",
-                                "total_points": 0,
-                                "pooled_mean": 0.0,
+                                "total_points": None,
+                                "pooled_mean": None,
                                 "chosen_cv_pct": 0.0,
                             })
                         else:
@@ -559,7 +649,7 @@ def render_cv_manager_page():
                                     "mean_val": st.column_config.NumberColumn("Mean", format="%.2f", width="small", disabled=True),
                                     "sd_val": st.column_config.NumberColumn("SD", format="%.3f", width="small", disabled=True),
                                     "cv_pct": st.column_config.NumberColumn("CV %", format="%.3f%%", width="small", disabled=True),
-                                    "n_points": st.column_config.NumberColumn("n", width="small", disabled=True),
+                                    "n_points": st.column_config.NumberColumn("n", format="%d", width="small", disabled=True),
                                 },
                                 use_container_width=True,
                                 hide_index=True,
@@ -571,26 +661,29 @@ def render_cv_manager_page():
                             metrics = _calc_pooled_cv(sub_selected)
 
                             tot_n = metrics["total_points"]
-                            if tot_n >= 20:
+                            p_mean = metrics["pooled_mean_3dec"]
+                            mean_disp = f"{p_mean:.3f} {unit_str}" if p_mean is not None else "Null"
+
+                            if metrics["n_lots"] == 0:
+                                badge_html = format_status_badge_html("EMPTY")
+                                box_cls = "eval-result-fail"
+                            elif tot_n is None or tot_n >= 20:
                                 badge_html = format_status_badge_html("PASS")
                                 box_cls = "eval-result-pass"
-                            elif tot_n > 0:
-                                badge_html = format_status_badge_html(f"WARN (N={tot_n}<20)")
-                                box_cls = "eval-result-fail"
                             else:
-                                badge_html = format_status_badge_html("EMPTY")
+                                badge_html = format_status_badge_html(f"WARN (N={tot_n}<20)")
                                 box_cls = "eval-result-fail"
 
                             render_html(f"""
                             <div class="eval-result-box {box_cls}" style="margin-bottom:8px;">
-                                <span><b>{lv_title}</b> (Mean: <code>{metrics['pooled_mean_3dec']:.3f} {unit_str}</code> | Lots: <code>{metrics['n_lots']}</code>)</span>
+                                <span><b>{lv_title}</b> (Mean: <code>{mean_disp}</code> | Lots: <code>{metrics['n_lots']}</code>)</span>
                                 {badge_html}
                             </div>
                             """)
 
                             m_a, m_b = st.columns(2)
                             m_a.metric("Cumulative CV %", f"{metrics['pooled_cv_3dec']:.3f}%")
-                            m_b.metric("Total Points (N)", f"{tot_n} pts")
+                            m_b.metric("Total Points (N)", "Null" if tot_n is None else f"{tot_n} pts")
 
                             render_html(f"""
                             <div class="history-meta-bar">
@@ -608,7 +701,7 @@ def render_cv_manager_page():
                                 "n_lots": metrics["n_lots"],
                                 "selected_lots": metrics["lots_str"],
                                 "total_points": tot_n,
-                                "pooled_mean": metrics["pooled_mean_3dec"],
+                                "pooled_mean": p_mean,
                                 "chosen_cv_pct": metrics["pooled_cv_3dec"],
                             })
 
@@ -705,8 +798,8 @@ def render_cv_manager_page():
                             "quarter_period", "instrument_name", "test_code", "unit", "level_name",
                             "pooled_mean", "n_lots", "selected_lots", "total_points", "chosen_cv_pct", "updated_at"
                         ]].copy()
-                        sheet_df["pooled_mean"] = sheet_df["pooled_mean"].round(3)
-                        sheet_df["chosen_cv_pct"] = sheet_df["chosen_cv_pct"].round(3)
+                        sheet_df["pooled_mean"] = pd.to_numeric(sheet_df["pooled_mean"], errors="coerce").round(3)
+                        sheet_df["chosen_cv_pct"] = pd.to_numeric(sheet_df["chosen_cv_pct"], errors="coerce").round(3)
                         sheet_df = sheet_df.rename(columns={
                             "quarter_period": "Quarter",
                             "instrument_name": "Instrument",

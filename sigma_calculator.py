@@ -402,10 +402,11 @@ def render_sigma_calculator_page():
                     cv_lots_info = "Chưa lưu ở Tab 3"
                     if not sub_cv.empty:
                         m_c = sub_cv[sub_cv["level_no"] == lv_no]
-                        if not m_c.empty and pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(
-                                m_c["chosen_cv_pct"].iloc[0]) > 0:
+                        if not m_c.empty and pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(m_c["chosen_cv_pct"].iloc[0]) > 0:
                             default_cv = float(m_c["chosen_cv_pct"].iloc[0])
-                            cv_lots_info = f"{m_c['selected_lots'].iloc[0]} (N={int(m_c['total_points'].iloc[0] or 0)})"
+                            raw_tot_n = m_c["total_points"].iloc[0]
+                            n_disp = f"N={int(float(raw_tot_n))}" if pd.notna(raw_tot_n) and str(raw_tot_n).strip() != "" and float(raw_tot_n) > 0 else "N=Null"
+                            cv_lots_info = f"{m_c['selected_lots'].iloc[0]} ({n_disp})"
 
                     with lv_cols[idx]:
                         st.markdown(f"##### 📌 {lv_title}")

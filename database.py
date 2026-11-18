@@ -732,7 +732,6 @@ def _ensure_ws_headers(ws, expected_headers: List[str]) -> List[List[Any]]:
 
     return all_vals
 
-
 @st.cache_data(ttl=300, show_spinner=False)
 def get_all_iqc_lots() -> pd.DataFrame:
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
@@ -757,12 +756,10 @@ def get_all_iqc_lots() -> pd.DataFrame:
 
     df["id"] = df["id"].fillna(0).astype(int)
     df["level_no"] = df["level_no"].fillna(1).astype(int)
-    df["n_points"] = df["n_points"].fillna(0).astype(int)
     return df[IQC_LOTS_HEADERS].sort_values(
         by=["instrument_name", "test_code", "level_no", "id"],
         ascending=[True, True, True, False],
     ).reset_index(drop=True)
-
 
 def save_iqc_lot(
     instrument_name: str,
@@ -775,10 +772,10 @@ def save_iqc_lot(
     start_date: str,
     cutoff_date: str,
     lot_status: str,
-    mean_val: float,
-    sd_val: float,
+    mean_val: Optional[float],
+    sd_val: Optional[float],
     cv_pct: float,
-    n_points: int,
+    n_points: Optional[int],
     notes: str = "",
 ):
     ws = get_ws("iqc_lots", IQC_LOTS_HEADERS)
@@ -816,6 +813,10 @@ def save_iqc_lot(
     next_id = max([int(r["id"]) for r in existing if str(r.get("id", "")).isdigit()], default=0) + 1
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    mean_cell = "" if mean_val is None else round(float(mean_val), 3)
+    sd_cell = "" if sd_val is None else round(float(sd_val), 4)
+    n_cell = "" if n_points is None else int(n_points)
+
     new_row = [
         next_id,
         clean_inst,
@@ -828,10 +829,10 @@ def save_iqc_lot(
         str(start_date).strip(),
         str(cutoff_date).strip(),
         str(lot_status).strip(),
-        round(float(mean_val), 3),
-        round(float(sd_val), 4),
+        mean_cell,
+        sd_cell,
         round(float(cv_pct), 3),
-        int(n_points),
+        n_cell,
         str(notes).strip(),
         now_str,
     ]
@@ -901,6 +902,8 @@ def save_cv_summary_records(
     rows_to_add = []
     for rec in level_records:
         next_id += 1
+        tot_pts = rec.get("total_points")
+        p_mean = rec.get("pooled_mean")
         rows_to_add.append([
             next_id,
             q_clean,
@@ -911,8 +914,8 @@ def save_cv_summary_records(
             rec.get("level_name", "Level 1 (LOW)"),
             int(rec.get("n_lots", 0) or 0),
             rec.get("selected_lots", ""),
-            int(rec.get("total_points", 0) or 0),
-            round(float(rec.get("pooled_mean", 0.0) or 0.0), 3),
+            "" if tot_pts is None else int(tot_pts),
+            "" if p_mean is None else round(float(p_mean), 3),
             round(float(rec.get("chosen_cv_pct", 0.0) or 0.0), 3),
             now_str,
         ])
