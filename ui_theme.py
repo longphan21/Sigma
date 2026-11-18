@@ -242,6 +242,17 @@ def inject_custom_css():
             font-weight: 800 !important;
             font-size: 0.84rem !important;
         }
+        
+        /* SUB-MENU ITEMS IN SIDEBAR */
+        [class*="st-key-nav_sub_"] {
+            padding-left: 14px !important;
+        }
+        [class*="st-key-nav_sub_"] .stButton > button {
+            min-height: 35px !important;
+            height: 35px !important;
+            font-size: 0.79rem !important;
+            border-left: 3px solid #66BB6A !important;
+        }
 
         /* BANNER */
         .page-banner {
@@ -687,7 +698,13 @@ def render_sidebar_menu(
     if not menu_items:
         return ""
 
-    valid_labels = [m[0] for m in menu_items]
+    valid_labels = []
+    for m in menu_items:
+        if len(m) >= 3 and m[2]:
+            valid_labels.extend([sub[0] for sub in m[2]])
+        else:
+            valid_labels.append(m[0])
+
     default_page = valid_labels[0]
     if state_key not in st.session_state or st.session_state[state_key] not in valid_labels:
         st.session_state[state_key] = default_page
@@ -704,17 +721,50 @@ def render_sidebar_menu(
         <div class="sidebar-section-label">{section_label}</div>
         """)
 
-        for item_label, item_icon in menu_items:
-            is_active = st.session_state[state_key] == item_label
-            btn_text = f"{item_icon}  {item_label}" if item_icon else item_label
-            st.button(
-                btn_text,
-                key=f"nav_btn_{state_key}_{item_label}",
-                type="primary" if is_active else "secondary",
-                use_container_width=True,
-                on_click=_switch_menu_page,
-                args=(item_label,),
-            )
+        for item in menu_items:
+            item_label = item[0]
+            item_icon = item[1] if len(item) > 1 else ""
+            sub_items = item[2] if len(item) >= 3 else None
+
+            if sub_items:
+                sub_labels = [s[0] for s in sub_items]
+                is_group_active = st.session_state[state_key] in sub_labels
+                arrow = "▾" if is_group_active else "▸"
+                btn_text = f"{item_icon}  {item_label} {arrow}" if item_icon else f"{item_label} {arrow}"
+                target_on_click = st.session_state[state_key] if is_group_active else sub_labels[0]
+
+                st.button(
+                    btn_text,
+                    key=f"nav_btn_{state_key}_{item_label}",
+                    type="primary" if is_group_active else "secondary",
+                    use_container_width=True,
+                    on_click=_switch_menu_page,
+                    args=(target_on_click,),
+                )
+
+                if is_group_active:
+                    for sub_label, sub_icon in sub_items:
+                        is_sub_active = st.session_state[state_key] == sub_label
+                        sub_text = f"{sub_icon}  {sub_label}" if sub_icon else f"↳ {sub_label}"
+                        st.button(
+                            sub_text,
+                            key=f"nav_sub_{state_key}_{sub_label}",
+                            type="primary" if is_sub_active else "secondary",
+                            use_container_width=True,
+                            on_click=_switch_menu_page,
+                            args=(sub_label,),
+                        )
+            else:
+                is_active = st.session_state[state_key] == item_label
+                btn_text = f"{item_icon}  {item_label}" if item_icon else item_label
+                st.button(
+                    btn_text,
+                    key=f"nav_btn_{state_key}_{item_label}",
+                    type="primary" if is_active else "secondary",
+                    use_container_width=True,
+                    on_click=_switch_menu_page,
+                    args=(item_label,),
+                )
 
     return st.session_state[state_key]
 

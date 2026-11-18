@@ -1,6 +1,8 @@
 import io
 import streamlit as st
 import pandas as pd
+from bias_calculator import render_bias_calculator_page
+from tea_manager import render_tea_manager_page
 
 from ui_theme import (
     init_theme,
@@ -32,10 +34,19 @@ init_database()
 
 # Menu Order: Tab 3 -> 1 (Bias Calculator), Overview -> 2, Import PDF -> 3, Batch Manager -> 4
 MENU_ITEMS = [
-    ("1. Bias Calculator", ":material/calculate:"),
-    ("2. Overview", ":material/dashboard:"),
-    ("3. Import PDF", ":material/upload_file:"),
-    ("4. Batch Manager", ":material/folder_open:"),
+    (
+        "1. Bias Calculator",
+        ":material/calculate:",
+        [
+            ("Bias Calculator", ":material/calculate:"),
+            ("Overview", ":material/dashboard:"),
+            ("Import PDF", ":material/upload_file:"),
+            ("Batch Manager", ":material/folder_open:"),
+        ],
+    ),
+    ("2. TEa Manager", ":material/rule:"),
+    ("3. Cumulative CV", ":material/analytics:"),
+    ("4. Sigma & Westgard", ":material/verified:"),
 ]
 
 page = render_sidebar_menu(
@@ -48,14 +59,14 @@ page = render_sidebar_menu(
 # ==============================================================================
 # TAB 1: EQA BIAS CALCULATOR
 # ==============================================================================
-if page == "1. Bias Calculator":
+if page == "Bias Calculator":
     render_bias_calculator_page()
 
 
 # ==============================================================================
 # TAB 2: OVERVIEW
 # ==============================================================================
-elif page == "2. Overview":
+elif page == "Overview":
     render_page_banner("EQA Database Overview")
 
     batches = get_all_batches()
@@ -126,7 +137,7 @@ elif page == "2. Overview":
 # ==============================================================================
 # TAB 3: IMPORT EQA PDF
 # ==============================================================================
-elif page == "3. Import PDF":
+elif page == "Import PDF":
     render_page_banner("Import EQA PDF")
 
     with st.container(border=True):
@@ -236,7 +247,7 @@ elif page == "3. Import PDF":
 # ==============================================================================
 # TAB 4: BATCH MANAGER
 # ==============================================================================
-elif page == "4. Batch Manager":
+elif page == "Batch Manager":
     render_page_banner("Batch Manager")
 
     batches = get_all_batches()
@@ -289,3 +300,19 @@ elif page == "4. Batch Manager":
                     "error",
                 )
                 st.rerun()
+
+# ==============================================================================
+# TAB 2: TEA MANAGER
+# ==============================================================================
+elif page == "2. TEa Manager":
+    render_tea_manager_page()
+
+
+# ==============================================================================
+# TAB 3 & TAB 4: PLACEHOLDERS FOR STAGE 2 & STAGE 3
+# ==============================================================================
+elif page in ("3. Cumulative CV", "4. Sigma & Westgard"):
+    render_page_banner(page)
+    with st.container(border=True):
+        st.markdown(f"#### :material/construction: {page}")
+        st.write("Module này sẽ được triển khai ở Chặng 2 và Chặng 3.")
