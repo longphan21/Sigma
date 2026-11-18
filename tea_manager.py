@@ -14,6 +14,8 @@ from database import (
 
 TEA_SOURCE_OPTIONS = [
     "CLIA",
+    "EFLM",
+    "AAB",
     "BV (Desirable)",
     "BV (Minimum)",
     "BV (Optimum)",
@@ -55,6 +57,19 @@ def render_tea_manager_page():
 
     df_eqa = get_all_results_joined()
     df_tea = get_all_tea_standards()
+
+    saved_custom_sources = []
+    if not df_tea.empty and "tea_source" in df_tea.columns:
+        for s in df_tea["tea_source"].dropna().unique().tolist():
+            s_clean = str(s).strip()
+            if s_clean and s_clean not in TEA_SOURCE_OPTIONS:
+                saved_custom_sources.append(s_clean)
+
+    all_source_options = (
+            [s for s in TEA_SOURCE_OPTIONS if s != "Other"]
+            + sorted(saved_custom_sources)
+            + ["Other"]
+    )
 
     inst_set = set()
     if not df_eqa.empty and "instrument_name" in df_eqa.columns:
@@ -109,7 +124,7 @@ def render_tea_manager_page():
         default_unit = unit_lookup.get(sel_test_opt, "") if sel_test_opt != "+ Custom Analyte" else ""
         unit_in = c2.text_input("Unit", value=default_unit, key=f"tea_unit_in_{sel_inst_opt}_{sel_test_opt}")
 
-        sel_source = c3.selectbox("TEa Source", options=TEA_SOURCE_OPTIONS, key="tea_source_sel")
+        sel_source = c3.selectbox("TEa Source", options=all_source_options, key="tea_source_sel")
 
         existing_val = 10.0
         if not df_tea.empty and sel_inst_opt != "+ Custom Instrument" and sel_test_opt != "+ Custom Analyte":
@@ -267,7 +282,7 @@ def render_tea_manager_page():
                 "test_code": st.column_config.TextColumn("Analyte", width="small", disabled=True),
                 "test_full_name": st.column_config.TextColumn("Full Name", width="medium", disabled=True),
                 "unit": st.column_config.TextColumn("Unit", width="small"),
-                "tea_source": st.column_config.SelectboxColumn("TEa Source", options=TEA_SOURCE_OPTIONS, width="medium"),
+                "tea_source": st.column_config.SelectboxColumn("TEa Source", options=all_source_options, width="medium"),
                 "tea_pct": st.column_config.NumberColumn("TEa %", format="%.2f%%", min_value=0.01, max_value=300.0, step=0.1, width="small"),
                 "is_default": st.column_config.CheckboxColumn("★ Default", width="small"),
                 "notes": st.column_config.TextColumn("Notes", width="medium"),
