@@ -1,10 +1,6 @@
 import io
 import streamlit as st
 import pandas as pd
-from bias_calculator import render_bias_calculator_page
-from tea_manager import render_tea_manager_page
-from cv_manager import render_cv_manager_page
-from sigma_calculator import render_sigma_calculator_page
 
 from ui_theme import (
     init_theme,
@@ -30,11 +26,13 @@ from components import (
     render_overview_compact_card,
 )
 from bias_calculator import render_bias_calculator_page
+from tea_manager import render_tea_manager_page
+from cv_manager import render_cv_manager_page
+from sigma_calculator import render_sigma_calculator_page
 
 init_theme(page_title="EQA Six Sigma System")
 init_database()
 
-# Menu Order: Tab 3 -> 1 (Bias Calculator), Overview -> 2, Import PDF -> 3, Batch Manager -> 4
 MENU_ITEMS = [
     (
         "1. Bias Calculator",
@@ -77,7 +75,7 @@ elif page == "Overview":
     if not batches:
         with st.container(border=True):
             st.markdown("#### :material/info: No EQA Data Available")
-            st.write("Please upload a VEQAS PDF report in **3. Import PDF**.")
+            st.write("Please upload a VEQAS PDF report in **Import PDF**.")
     else:
         total_batches = len(batches)
         total_records = len(df_all)
@@ -247,7 +245,7 @@ elif page == "Import PDF":
 
 
 # ==============================================================================
-# TAB 4: BATCH MANAGER
+# TAB 4: BATCH MANAGER (CHỈ XUẤT EXCEL, KHÔNG XUẤT CSV)
 # ==============================================================================
 elif page == "Batch Manager":
     render_page_banner("Batch Manager")
@@ -256,7 +254,7 @@ elif page == "Batch Manager":
     if not batches:
         with st.container(border=True):
             st.markdown("#### :material/storage: Database Empty")
-            st.write("Please upload a VEQAS PDF report in **3. Import PDF** first.")
+            st.write("Please upload a VEQAS PDF report in **Import PDF** first.")
     else:
         with st.container(border=True):
             st.markdown("#### :material/folder_open: Select Batch")
@@ -272,21 +270,12 @@ elif page == "Batch Manager":
             render_eqa_results_table(sel_results, max_height=400)
 
             df_export = pd.DataFrame(sel_results)
-            act1, act2, act3, _ = st.columns([1.2, 1.2, 1.2, 1.4], vertical_alignment="bottom")
-
-            csv_bytes = df_export.to_csv(index=False).encode("utf-8-sig")
-            act1.download_button(
-                ":material/download: Export CSV",
-                data=csv_bytes,
-                file_name=f"EQA_{sel_batch['program_code']}_B{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+            act1, act2, _ = st.columns([1.3, 1.3, 2.4], vertical_alignment="bottom")
 
             excel_buf = io.BytesIO()
             with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
                 df_export.to_excel(writer, index=False, sheet_name="EQA_Results")
-            act2.download_button(
+            act1.download_button(
                 ":material/table_view: Export Excel",
                 data=excel_buf.getvalue(),
                 file_name=f"EQA_{sel_batch['program_code']}_B{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.xlsx",
@@ -294,7 +283,7 @@ elif page == "Batch Manager":
                 use_container_width=True,
             )
 
-            if act3.button(":material/delete: Delete Batch", type="secondary", use_container_width=True):
+            if act2.button(":material/delete: Delete Batch", type="secondary", use_container_width=True):
                 delete_batch(sel_batch["id"])
                 queue_popup(
                     "Batch Deleted",
@@ -302,6 +291,7 @@ elif page == "Batch Manager":
                     "error",
                 )
                 st.rerun()
+
 
 # ==============================================================================
 # TAB 2: TEA MANAGER
@@ -318,7 +308,7 @@ elif page == "3. Cumulative CV":
 
 
 # ==============================================================================
-# TAB 4: PLACEHOLDER FOR STAGE 3
+# TAB 4: SIGMA & WESTGARD CALCULATOR
 # ==============================================================================
 elif page == "4. Sigma & Westgard":
     render_sigma_calculator_page()

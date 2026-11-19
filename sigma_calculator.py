@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Tuple
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from ui_theme import render_page_banner, render_html, queue_popup, format_status_badge_html
 from database import (
@@ -24,6 +26,156 @@ QUARTER_OPTIONS: List[Tuple[int, str, int]] = [
     (4, "Q4 (Dec)", 12),
 ]
 
+# Thang màu phân biệt 5 mức điểm Sigma (dùng chung cho cả giao diện bảng và file Excel xuất ra)
+SIGMA_COLOR_TIERS = [
+    ("≥ 6.0σ — World Class (Xuất sắc)", "C6EFCE", "006100"),
+    ("5.0σ – < 6.0σ — Excellent (Rất tốt)", "D6EAF8", "1B4F72"),
+    ("4.0σ – < 5.0σ — Good (Khá / Tốt)", "FFF2CC", "7F6000"),
+    ("3.0σ – < 4.0σ — Marginal (Chấp nhận tối thiểu)", "FCE4D6", "B45309"),
+    ("< 3.0σ — Unacceptable (Không đạt / Cần CAPA)", "FFC7CE", "9C0006"),
+]
+
+
+def _get_sigma_hex_colors(sigma_val: Any) -> Tuple[str, str]:
+    """Trả về (fill_hex, font_hex) không kèm dấu # tương ứng với giá trị Sigma."""
+    try:
+        s = float(sigma_val)
+    except (ValueError, TypeError):
+        return ("FFFFFF", "0A2540")
+    if pd.isna(s):
+        return ("FFFFFF", "0A2540")
+
+    if s >= 6.0:
+        return ("C6EFCE", "006100")
+    elif s >= 5.0:
+        return ("D6EAF8", "1B4F72")
+    elif s >= 4.0:
+        return ("FFF2CC", "7F6000")
+    elif s >= 3.0:
+        return ("FCE4D6", "B45309")
+    return ("FFC7CE", "9C0006")
+
+
+def _style_sigma_dataframe_ui(df_display: pd.DataFrame):
+    """Tô màu cột Sigma (σ), Assessment và Westgard Rules ngay trên giao diện Streamlit."""
+    def _highlight_row(row):
+        bg_hex, fg_hex = _get_sigma_hex_colors(row.get("Sigma (σ)"))
+        highlight_css = f"background-color: #{bg_hex}; color: #{fg_hex}; font-weight: 700;"
+        styles = []
+        for col in row.index:
+            if col in ("Sigma (σ)", "Assessment", "Westgard Rules"):
+                styles.append(highlight_css)
+            else:
+                styles.append("")
+        return styles
+
+    return df_display.style.apply(_highlight_row, axis=1)
+
+
+def _style_sigma_excel_sheet(ws, df_sheet: pd.DataFrame):
+    """
+    Định dạng bảng Excel Six Sigma & Westgard bằng openpyxl:
+    - Tiêu đề xanh đậm, chữ trắng in đậm, cố định dòng tiêu đề, bật bộ lọc.
+    - Tô màu phân biệt 5 ngưỡng điểm Sigma cho các cột Sigma (σ), Assessment, Westgard Rules
+      và tô nền nhạt tương ứng kèm bảng Chú thích thang màu ở cuối sheet.
+    """
+    header_fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+    zebra_fill = PatternFill(start_color="F8FBF9", end_color="F8FBF9", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    body_font = Font(name="Calibri", size=10, color="0A2540")
+    bold_font = Font(name="Calibri", size=10, bold=True, color="0A2540")
+    thin_side = Side(style="thin", color="D0D7DE")
+    border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+    col_names = list(df_sheet.columns)
+    n_cols = len(col_names)
+    n_rows = len(df_sheet) + 1
+
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 26
+    if n_cols > 0:
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{max(n_rows, 1)}"
+
+    for c_idx in range(1, n_cols + 1):
+        cell = ws.cell(row=1, column=c_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    sigma_col_idx = col_names.index("Sigma (σ)") + 1 if "Sigma (σ)" in col_names else None
+    highlight_cols = {"Sigma (σ)", "Assessment", "Westgard Rules"}
+
+    for r_idx in range(2, n_rows + 1):
+        ws.row_dimensions[r_idx].height = 21
+        sigma_cell_val = ws.cell(row=r_idx, column=sigma_col_idx).value if sigma_col_idx else None
+        bg_hex, fg_hex = _get_sigma_hex_colors(sigma_cell_val)
+        tier_fill = PatternFill(start_color=bg_hex, end_color=bg_hex, fill_type="solid")
+        tier_font = Font(name="Calibri", size=10, bold=True, color=fg_hex)
+        is_zebra = (r_idx % 2 == 1)
+
+        for c_idx, col_name in enumerate(col_names, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            cell.border = border
+
+            if col_name in highlight_cols and sigma_cell_val is not None:
+                cell.fill = tier_fill
+                cell.font = tier_font
+            else:
+                cell.font = bold_font if col_name == "Analyte" else body_font
+                if is_zebra:
+                    cell.fill = zebra_fill
+
+            if col_name == "TEa %":
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                if cell.value is not None and cell.value != "":
+                    cell.number_format = '0.00"%"'
+            elif col_name in ("Bias %", "CV %"):
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                if cell.value is not None and cell.value != "":
+                    cell.number_format = '0.000"%"'
+            elif col_name == "Sigma (σ)":
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if cell.value is not None and cell.value != "":
+                    cell.number_format = '0.00" σ"'
+            elif col_name in ("Quarter", "Analyte", "Unit", "TEa Source", "Westgard Rules"):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Bảng chú thích thang màu điểm Sigma ở cuối sheet
+    legend_start = n_rows + 2
+    title_cell = ws.cell(row=legend_start, column=1, value="Chú thích thang màu điểm Sigma (σ):")
+    title_cell.font = Font(name="Calibri", size=10, bold=True, color="1B5E20")
+    ws.row_dimensions[legend_start].height = 20
+
+    for offset, (label_txt, bg_hex, fg_hex) in enumerate(SIGMA_COLOR_TIERS, start=1):
+        r_leg = legend_start + offset
+        ws.row_dimensions[r_leg].height = 19
+        c_swatch = ws.cell(row=r_leg, column=1, value="■")
+        c_swatch.fill = PatternFill(start_color=bg_hex, end_color=bg_hex, fill_type="solid")
+        c_swatch.font = Font(name="Calibri", size=10, bold=True, color=fg_hex)
+        c_swatch.alignment = Alignment(horizontal="center", vertical="center")
+        c_swatch.border = border
+
+        c_desc = ws.cell(row=r_leg, column=2, value=label_txt)
+        c_desc.fill = PatternFill(start_color=bg_hex, end_color=bg_hex, fill_type="solid")
+        c_desc.font = Font(name="Calibri", size=10, bold=True, color=fg_hex)
+        c_desc.alignment = Alignment(horizontal="left", vertical="center")
+        c_desc.border = border
+        if n_cols >= 4:
+            ws.merge_cells(start_row=r_leg, start_column=2, end_row=r_leg, end_column=4)
+            for mc in range(3, 5):
+                ws.cell(row=r_leg, column=mc).border = border
+
+    for c_idx, col_name in enumerate(col_names, start=1):
+        max_len = len(str(col_name))
+        if not df_sheet.empty:
+            for val in df_sheet[col_name]:
+                if pd.notna(val):
+                    max_len = max(max_len, len(str(val)))
+        ws.column_dimensions[get_column_letter(c_idx)].width = min(max(max_len + 4, 12), 40)
+
 
 def evaluate_westgard_sigma(sigma_val: float, num_levels: int = 2) -> Dict[str, str]:
     """
@@ -37,7 +189,7 @@ def evaluate_westgard_sigma(sigma_val: float, num_levels: int = 2) -> Dict[str, 
             "grade": "World Class (≥ 6σ)",
             "status_code": "PASS",
             "box_cls": "eval-result-pass",
-            "rules": "1_3s" if not is_3lv else "1_3s",
+            "rules": "1_3s",
             "qc_scheme": "N=2, R=1 (1 luật đơn)" if not is_3lv else "N=3, R=1 (1 luật đơn)",
         }
     elif sigma_val >= 5.0:
@@ -89,10 +241,10 @@ def _render_sigma_quarter_summary_table(
         "sigma_grade", "westgard_rules", "qc_freq_note", "updated_at"
     ]].copy()
 
-    df_show["tea_pct"] = df_show["tea_pct"].round(2)
-    df_show["bias_pct"] = df_show["bias_pct"].round(3)
-    df_show["cv_pct"] = df_show["cv_pct"].round(3)
-    df_show["sigma_val"] = df_show["sigma_val"].round(2)
+    df_show["tea_pct"] = pd.to_numeric(df_show["tea_pct"], errors="coerce").round(2)
+    df_show["bias_pct"] = pd.to_numeric(df_show["bias_pct"], errors="coerce").round(3)
+    df_show["cv_pct"] = pd.to_numeric(df_show["cv_pct"], errors="coerce").round(3)
+    df_show["sigma_val"] = pd.to_numeric(df_show["sigma_val"], errors="coerce").round(2)
 
     df_display = df_show.rename(columns={
         "quarter_period": "Quarter",
@@ -112,7 +264,7 @@ def _render_sigma_quarter_summary_table(
     })
 
     st.dataframe(
-        df_display,
+        _style_sigma_dataframe_ui(df_display),
         column_config={
             "TEa %": st.column_config.NumberColumn("TEa %", format="%.2f%%"),
             "Bias %": st.column_config.NumberColumn("Bias %", format="%.3f%%"),
@@ -124,14 +276,15 @@ def _render_sigma_quarter_summary_table(
         key=f"df_sigma_saved_table_{key_suffix}",
     )
 
-    act_c1, act_c2, act_c3 = st.columns([1.2, 2.2, 1.2], vertical_alignment="bottom")
+    act_c1, act_c2, act_c3 = st.columns([1.4, 2.0, 1.2], vertical_alignment="bottom")
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         df_display.to_excel(writer, index=False, sheet_name="Sigma_Westgard")
+        _style_sigma_excel_sheet(writer.sheets["Sigma_Westgard"], df_display)
     safe_q_fname = quarter_code.replace("/", "_").replace(" ", "_")
 
     act_c1.download_button(
-        f":material/table_view: Export ({quarter_code})",
+        f":material/table_view: Export Excel ({quarter_code})",
         data=excel_buf.getvalue(),
         file_name=f"Six_Sigma_Westgard_{safe_q_fname}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -195,7 +348,7 @@ def render_sigma_calculator_page():
         # ======================================================================
         with st.container(border=True):
             st.markdown("#### :material/tune: 1. Configuration")
-            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.95, 0.75, 1.35, 1.85, 0.9], vertical_alignment="bottom")
+            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.85, 0.65, 1.70, 1.80, 0.80], vertical_alignment="bottom")
 
             q_idx_map = {q_no: label for q_no, label, _ in QUARTER_OPTIONS}
             sel_q_no = c_q.selectbox(
@@ -232,7 +385,12 @@ def render_sigma_calculator_page():
 
             for df_src in (df_tea_all, df_lots_all):
                 if not df_src.empty:
-                    for _, r in df_src.iterrows():
+                    sub_src = (
+                        df_src[df_src["instrument_name"].astype(str).str.lower() == sel_inst.lower()]
+                        if "instrument_name" in df_src.columns
+                        else df_src
+                    )
+                    for _, r in sub_src.iterrows():
                         c_str = str(r.get("test_code", "")).strip()
                         if c_str and c_str.upper() not in catalog_map:
                             catalog_map[c_str.upper()] = (
@@ -254,12 +412,34 @@ def render_sigma_calculator_page():
 
             test_label_map = {x[0]: f"{x[0]} — {x[1]}" for x in test_items}
 
+            # Khóa cứng Analyte đang chọn theo từng máy để không bị reset sau khi Save
+            if "sig_persisted_test_by_inst" not in st.session_state:
+                st.session_state["sig_persisted_test_by_inst"] = {}
+
+            sig_test_wkey = f"sig_test_sel_{sel_inst}"
+
+            def _on_sig_test_change(inst_name: str, w_key: str):
+                picked_t = st.session_state.get(w_key)
+                if picked_t:
+                    st.session_state["sig_persisted_test_by_inst"][inst_name] = picked_t
+
+            persisted_t = st.session_state["sig_persisted_test_by_inst"].get(sel_inst)
+            if persisted_t not in test_codes_list:
+                persisted_t = test_codes_list[0]
+                st.session_state["sig_persisted_test_by_inst"][sel_inst] = persisted_t
+
+            default_sig_idx = test_codes_list.index(persisted_t)
+
             sel_test = c_test.selectbox(
                 f"Analyte ({len(test_codes_list)})",
                 options=test_codes_list,
+                index=default_sig_idx,
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_sigma_in_quarter else "") + test_label_map.get(k, k),
-                key=f"sig_test_sel_{sel_inst}",
+                key=sig_test_wkey,
+                on_change=_on_sig_test_change,
+                args=(sel_inst, sig_test_wkey),
             )
+            st.session_state["sig_persisted_test_by_inst"][sel_inst] = sel_test
 
             num_levels = c_lv.selectbox(
                 "Levels",
@@ -302,7 +482,7 @@ def render_sigma_calculator_page():
                 sub_tea = df_tea_all[
                     (df_tea_all["instrument_name"].astype(str).str.strip().str.lower() == sel_inst.strip().lower())
                     & (df_tea_all["test_code"].astype(str).str.strip().str.upper() == sel_test.strip().upper())
-                    ].sort_values(by=["is_default", "tea_pct"], ascending=[False, False]).reset_index(drop=True)
+                ].sort_values(by=["is_default", "tea_pct"], ascending=[False, False]).reset_index(drop=True)
 
             has_bias_str = f"✓ {len(sub_bias)} Lv" if not sub_bias.empty else "⚠️ Not saved"
             has_cv_str = f"✓ {len(sub_cv)} Lv" if not sub_cv.empty else "⚠️ Not saved"
@@ -365,142 +545,148 @@ def render_sigma_calculator_page():
                 key=f"sig_tea_src_txt_{sel_inst}_{sel_test}_{sel_tea_label}",
             )
 
-            # ======================================================================
-            # STEP 3: SIGMA CALCULATION & WESTGARD RULES BY LEVEL
-            # ======================================================================
-            with st.container(border=True):
-                hdr_s1, hdr_s2 = st.columns([3.4, 1.6], vertical_alignment="center")
-                with hdr_s1:
-                    st.markdown(
-                        f"#### :material/verified: 3. Sigma Score & Westgard Rules — **{active_quarter_period}**"
-                    )
-                with hdr_s2:
-                    allow_manual_override = st.checkbox(
-                        "✏️ Chỉnh tay Bias% / CV%",
-                        value=False,
-                        key=f"sig_manual_override_{active_quarter_period}_{sel_inst}_{sel_test}",
-                    )
+        # ======================================================================
+        # STEP 3: SIGMA CALCULATION & WESTGARD RULES BY LEVEL
+        # ======================================================================
+        with st.container(border=True):
+            hdr_s1, hdr_s2 = st.columns([3.4, 1.6], vertical_alignment="center")
+            with hdr_s1:
+                st.markdown(
+                    f"#### :material/verified: 3. Sigma Score & Westgard Rules — **{active_quarter_period}**"
+                )
+            with hdr_s2:
+                allow_manual_override = st.checkbox(
+                    "✏️ Chỉnh tay Bias% / CV%",
+                    value=False,
+                    key=f"sig_manual_override_{active_quarter_period}_{sel_inst}_{sel_test}",
+                )
 
-                lv_cols = st.columns(num_levels)
-                records_to_save = []
+            lv_cols = st.columns(num_levels)
+            records_to_save = []
 
-                for idx in range(num_levels):
-                    lv_no = idx + 1
-                    lv_title = level_names[idx]
+            for idx in range(num_levels):
+                lv_no = idx + 1
+                lv_title = level_names[idx]
 
-                    # Lấy đúng Bias% đã chọn của mức nồng độ này từ Tab 1
-                    default_bias = 0.0
-                    bias_months_info = "Chưa lưu ở Tab 1"
-                    if not sub_bias.empty:
-                        m_b = sub_bias[sub_bias["level_no"] == lv_no]
-                        if not m_b.empty:
-                            default_bias = float(m_b["chosen_bias_pct"].iloc[0] or 0.0)
-                            bias_months_info = str(m_b["selected_batches"].iloc[0] or "-")
+                # Lấy đúng Bias% đã chọn của mức nồng độ này từ Tab 1
+                default_bias = 0.0
+                bias_months_info = "Chưa lưu ở Tab 1"
+                if not sub_bias.empty:
+                    m_b = sub_bias[sub_bias["level_no"] == lv_no]
+                    if not m_b.empty:
+                        default_bias = float(m_b["chosen_bias_pct"].iloc[0] or 0.0)
+                        bias_months_info = str(m_b["selected_batches"].iloc[0] or "-")
 
-                    # Lấy đúng CV% tích lũy đã chọn của mức nồng độ này từ Tab 3
-                    default_cv = 2.0
-                    cv_lots_info = "Chưa lưu ở Tab 3"
-                    if not sub_cv.empty:
-                        m_c = sub_cv[sub_cv["level_no"] == lv_no]
-                        if not m_c.empty and pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(m_c["chosen_cv_pct"].iloc[0]) > 0:
-                            default_cv = float(m_c["chosen_cv_pct"].iloc[0])
-                            raw_tot_n = m_c["total_points"].iloc[0]
-                            n_disp = f"N={int(float(raw_tot_n))}" if pd.notna(raw_tot_n) and str(raw_tot_n).strip() != "" and float(raw_tot_n) > 0 else "N=Null"
-                            cv_lots_info = f"{m_c['selected_lots'].iloc[0]} ({n_disp})"
-
-                    with lv_cols[idx]:
-                        st.markdown(f"##### 📌 {lv_title}")
-
-                        if allow_manual_override:
-                            in_c1, in_c2 = st.columns(2)
-                            bias_val = in_c1.number_input(
-                                "Chosen |Bias %|",
-                                min_value=0.0,
-                                max_value=200.0,
-                                value=round(float(default_bias), 3),
-                                step=0.05,
-                                format="%.3f",
-                                key=f"sig_bias_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
-                            )
-                            cv_val = in_c2.number_input(
-                                "Cumulative CV %",
-                                min_value=0.001,
-                                max_value=200.0,
-                                value=round(max(0.001, float(default_cv)), 3),
-                                step=0.05,
-                                format="%.3f",
-                                key=f"sig_cv_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
-                            )
-                        else:
-                            bias_val = round(float(default_bias), 3)
-                            cv_val = round(max(0.001, float(default_cv)), 3)
-                            top_m1, top_m2 = st.columns(2)
-                            top_m1.metric("Chosen |Bias %|", f"{bias_val:.3f}%")
-                            top_m2.metric("Cumulative CV %", f"{cv_val:.3f}%")
-
-                        sigma_raw = (float(chosen_tea_pct) - float(bias_val)) / float(cv_val) if float(
-                            cv_val) > 0 else 0.0
-                        sigma_2dec = round(sigma_raw, 2)
-                        wg_info = evaluate_westgard_sigma(sigma_2dec, num_levels=num_levels)
-
-                        badge_html = format_status_badge_html(wg_info["status_code"])
-                        render_html(f"""
-                            <div class="eval-result-box {wg_info['box_cls']}" style="margin-bottom:8px;">
-                                <span><b>{wg_info['grade']}</b></span>
-                                {badge_html}
-                            </div>
-                            """)
-
-                        m_1, m_2 = st.columns([1.0, 1.4])
-                        m_1.metric("Sigma (σ)", f"{sigma_2dec:.2f} σ")
-                        m_2.metric("Westgard Rules", wg_info["rules"])
-
-                        formula_str = f"({chosen_tea_pct:.2f}% - {bias_val:.3f}%) / {cv_val:.3f}% = {sigma_2dec:.2f}σ"
-                        render_html(f"""
-                            <div class="history-meta-bar">
-                                <span><b>Formula:</b> <code>{formula_str}</code></span>
-                                <span><b>QC Scheme:</b> <b>{wg_info['qc_scheme']}</b></span>
-                                <span><b>Bias Months:</b> <code>{bias_months_info}</code></span>
-                                <span><b>IQC Lots:</b> <code>{cv_lots_info}</code></span>
-                            </div>
-                            """)
-
-                        records_to_save.append({
-                            "instrument_name": sel_inst,
-                            "test_code": sel_test,
-                            "test_full_name": full_name_str,
-                            "unit": unit_str,
-                            "level_no": lv_no,
-                            "level_name": lv_title,
-                            "tea_source": str(chosen_tea_src_final).strip() or "Custom",
-                            "tea_pct": float(chosen_tea_pct),
-                            "bias_pct": float(bias_val),
-                            "cv_pct": float(cv_val),
-                            "sigma_val": sigma_2dec,
-                            "sigma_grade": wg_info["grade"],
-                            "westgard_rules": wg_info["rules"],
-                            "qc_freq_note": wg_info["qc_scheme"],
-                        })
-
-                btn_col, _ = st.columns([1.6, 3.4])
-                with btn_col:
-                    if st.button(
-                            f":material/save: Save Sigma & Westgard to {active_quarter_period}",
-                            type="primary",
-                            use_container_width=True,
-                    ):
-                        save_sigma_summary_records(
-                            instrument_name=sel_inst,
-                            test_code=sel_test,
-                            level_records=records_to_save,
-                            quarter_period=active_quarter_period,
+                # Lấy đúng CV% tích lũy đã chọn của mức nồng độ này từ Tab 3
+                default_cv = 2.0
+                cv_lots_info = "Chưa lưu ở Tab 3"
+                if not sub_cv.empty:
+                    m_c = sub_cv[sub_cv["level_no"] == lv_no]
+                    if not m_c.empty and pd.notna(m_c["chosen_cv_pct"].iloc[0]) and float(m_c["chosen_cv_pct"].iloc[0]) > 0:
+                        default_cv = float(m_c["chosen_cv_pct"].iloc[0])
+                        raw_tot_n = m_c["total_points"].iloc[0]
+                        n_disp = (
+                            f"N={int(float(raw_tot_n))}"
+                            if pd.notna(raw_tot_n) and str(raw_tot_n).strip() != "" and float(raw_tot_n) > 0
+                            else "N=Null"
                         )
-                        queue_popup(
-                            "Saved Successfully",
-                            f"Saved Sigma & Westgard evaluation for {sel_test} ({sel_inst}) to {active_quarter_period}.",
-                            "success",
+                        cv_lots_info = f"{m_c['selected_lots'].iloc[0]} ({n_disp})"
+
+                with lv_cols[idx]:
+                    st.markdown(f"##### 📌 {lv_title}")
+
+                    if allow_manual_override:
+                        in_c1, in_c2 = st.columns(2)
+                        bias_val = in_c1.number_input(
+                            "Chosen |Bias %|",
+                            min_value=0.0,
+                            max_value=200.0,
+                            value=round(float(default_bias), 3),
+                            step=0.05,
+                            format="%.3f",
+                            key=f"sig_bias_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
                         )
-                        st.rerun()
+                        cv_val = in_c2.number_input(
+                            "Cumulative CV %",
+                            min_value=0.001,
+                            max_value=200.0,
+                            value=round(max(0.001, float(default_cv)), 3),
+                            step=0.05,
+                            format="%.3f",
+                            key=f"sig_cv_in_{active_quarter_period}_{sel_inst}_{sel_test}_lv{lv_no}",
+                        )
+                    else:
+                        bias_val = round(float(default_bias), 3)
+                        cv_val = round(max(0.001, float(default_cv)), 3)
+                        top_m1, top_m2 = st.columns(2)
+                        top_m1.metric("Chosen |Bias %|", f"{bias_val:.3f}%")
+                        top_m2.metric("Cumulative CV %", f"{cv_val:.3f}%")
+
+                    sigma_raw = (float(chosen_tea_pct) - float(bias_val)) / float(cv_val) if float(cv_val) > 0 else 0.0
+                    sigma_2dec = round(sigma_raw, 2)
+                    wg_info = evaluate_westgard_sigma(sigma_2dec, num_levels=num_levels)
+                    bg_hex, fg_hex = _get_sigma_hex_colors(sigma_2dec)
+
+                    badge_html = format_status_badge_html(wg_info["status_code"])
+                    render_html(f"""
+                    <div class="eval-result-box" style="margin-bottom:8px; background-color:#{bg_hex}; border-left:4px solid #{fg_hex}; color:#{fg_hex};">
+                        <span><b>{wg_info['grade']}</b></span>
+                        {badge_html}
+                    </div>
+                    """)
+
+                    m_1, m_2 = st.columns([1.0, 1.4])
+                    m_1.metric("Sigma (σ)", f"{sigma_2dec:.2f} σ")
+                    m_2.metric("Westgard Rules", wg_info["rules"])
+
+                    formula_str = f"({chosen_tea_pct:.2f}% - {bias_val:.3f}%) / {cv_val:.3f}% = {sigma_2dec:.2f}σ"
+                    render_html(f"""
+                    <div class="history-meta-bar">
+                        <span><b>Formula:</b> <code>{formula_str}</code></span>
+                        <span><b>QC Scheme:</b> <b>{wg_info['qc_scheme']}</b></span>
+                        <span><b>Bias Months:</b> <code>{bias_months_info}</code></span>
+                        <span><b>IQC Lots:</b> <code>{cv_lots_info}</code></span>
+                    </div>
+                    """)
+
+                    records_to_save.append({
+                        "instrument_name": sel_inst,
+                        "test_code": sel_test,
+                        "test_full_name": full_name_str,
+                        "unit": unit_str,
+                        "level_no": lv_no,
+                        "level_name": lv_title,
+                        "tea_source": str(chosen_tea_src_final).strip() or "Custom",
+                        "tea_pct": float(chosen_tea_pct),
+                        "bias_pct": float(bias_val),
+                        "cv_pct": float(cv_val),
+                        "sigma_val": sigma_2dec,
+                        "sigma_grade": wg_info["grade"],
+                        "westgard_rules": wg_info["rules"],
+                        "qc_freq_note": wg_info["qc_scheme"],
+                    })
+
+            btn_col, _ = st.columns([1.6, 3.4])
+            with btn_col:
+                if st.button(
+                    f":material/save: Save Sigma & Westgard to {active_quarter_period}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    save_sigma_summary_records(
+                        instrument_name=sel_inst,
+                        test_code=sel_test,
+                        level_records=records_to_save,
+                        quarter_period=active_quarter_period,
+                    )
+                    queue_popup(
+                        "Saved Successfully",
+                        f"Saved Sigma & Westgard evaluation for {sel_test} ({sel_inst}) to {active_quarter_period}.",
+                        "success",
+                    )
+                    st.session_state["sig_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(sig_test_wkey, None)
+                    st.rerun()
 
     # ==========================================================================
     # TAB 2: SAVED QUARTERLY SIGMA & WESTGARD SUMMARY (Q1, Q2, Q3, Q4)
@@ -544,15 +730,17 @@ def render_sigma_calculator_page():
                 # Thống kê nhanh phân bố Sigma của các bản ghi đang lọc
                 total_lv_evals = len(df_filtered_saved)
                 cnt_6s = int((df_filtered_saved["sigma_val"] >= 6.0).sum())
-                cnt_4to6 = int(((df_filtered_saved["sigma_val"] >= 4.0) & (df_filtered_saved["sigma_val"] < 6.0)).sum())
+                cnt_5to6 = int(((df_filtered_saved["sigma_val"] >= 5.0) & (df_filtered_saved["sigma_val"] < 6.0)).sum())
+                cnt_4to5 = int(((df_filtered_saved["sigma_val"] >= 4.0) & (df_filtered_saved["sigma_val"] < 5.0)).sum())
                 cnt_3to4 = int(((df_filtered_saved["sigma_val"] >= 3.0) & (df_filtered_saved["sigma_val"] < 4.0)).sum())
                 cnt_lt3 = int((df_filtered_saved["sigma_val"] < 3.0).sum())
 
-                mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("≥ 6.0 Sigma (World Class)", f"{cnt_6s}/{total_lv_evals}")
-                mc2.metric("4.0 – <6.0 Sigma (Good/Exc)", f"{cnt_4to6}/{total_lv_evals}")
-                mc3.metric("3.0 – <4.0 Sigma (Marginal)", f"{cnt_3to4}/{total_lv_evals}")
-                mc4.metric("< 3.0 Sigma (Unacceptable)", f"{cnt_lt3}/{total_lv_evals}")
+                mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+                mc1.metric("🟢 ≥ 6.0σ (World Class)", f"{cnt_6s}/{total_lv_evals}")
+                mc2.metric("🔵 5.0 – <6.0σ (Excellent)", f"{cnt_5to6}/{total_lv_evals}")
+                mc3.metric("🟡 4.0 – <5.0σ (Good)", f"{cnt_4to5}/{total_lv_evals}")
+                mc4.metric("🟠 3.0 – <4.0σ (Marginal)", f"{cnt_3to4}/{total_lv_evals}")
+                mc5.metric("🔴 < 3.0σ (Unacceptable)", f"{cnt_lt3}/{total_lv_evals}")
 
                 full_year_buf = io.BytesIO()
                 with pd.ExcelWriter(full_year_buf, engine="openpyxl") as writer:
@@ -566,10 +754,10 @@ def render_sigma_calculator_page():
                             "tea_source", "tea_pct", "bias_pct", "cv_pct", "sigma_val",
                             "sigma_grade", "westgard_rules", "qc_freq_note", "updated_at"
                         ]].copy()
-                        sheet_df["tea_pct"] = sheet_df["tea_pct"].round(2)
-                        sheet_df["bias_pct"] = sheet_df["bias_pct"].round(3)
-                        sheet_df["cv_pct"] = sheet_df["cv_pct"].round(3)
-                        sheet_df["sigma_val"] = sheet_df["sigma_val"].round(2)
+                        sheet_df["tea_pct"] = pd.to_numeric(sheet_df["tea_pct"], errors="coerce").round(2)
+                        sheet_df["bias_pct"] = pd.to_numeric(sheet_df["bias_pct"], errors="coerce").round(3)
+                        sheet_df["cv_pct"] = pd.to_numeric(sheet_df["cv_pct"], errors="coerce").round(3)
+                        sheet_df["sigma_val"] = pd.to_numeric(sheet_df["sigma_val"], errors="coerce").round(2)
                         sheet_df = sheet_df.rename(columns={
                             "quarter_period": "Quarter",
                             "instrument_name": "Instrument",
@@ -586,10 +774,12 @@ def render_sigma_calculator_page():
                             "qc_freq_note": "QC Run (N, R)",
                             "updated_at": "Updated",
                         })
-                        sheet_df.to_excel(writer, index=False, sheet_name=f"Q{q_i}_{sel_view_year}")
+                        sheet_name = f"Q{q_i}_{sel_view_year}"
+                        sheet_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                        _style_sigma_excel_sheet(writer.sheets[sheet_name], sheet_df)
 
                 f_col3.download_button(
-                    f":material/download: Export All (Q1–Q4 {sel_view_year})",
+                    f":material/download: Export Excel All (Q1–Q4 {sel_view_year})",
                     data=full_year_buf.getvalue(),
                     file_name=f"Six_Sigma_Westgard_All_Quarters_{sel_view_year}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

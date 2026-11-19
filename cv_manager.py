@@ -3,6 +3,8 @@ from datetime import datetime, date
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from ui_theme import render_page_banner, render_html, queue_popup, format_status_badge_html
 from database import (
@@ -24,7 +26,10 @@ QUARTER_OPTIONS: List[Tuple[int, str, int]] = [
 ]
 
 HEMATOLOGY_NULL_DEFAULT_TESTS = {
-    "HB", "HGB", "RBC", "RBC-OPT", "WBC", "PLT", "PLT-OPT", "HCT", "MCV", "MCH", "MCHC"
+    "HB", "HGB", "RBC", "RBC-OPT", "RBC-IMP",
+    "WBC", "WBC-OPT", "WBC-IMP",
+    "PLT", "PLT-OPT", "PLT-IMP",
+    "HCT", "MCV", "MCH", "MCHC", "RDW", "MPV",
 }
 
 MIN_PICK_DATE = date(2020, 1, 1)
@@ -72,6 +77,64 @@ def _is_valid_pos_num(val: Any) -> bool:
         return float(val) > 0
     except (ValueError, TypeError):
         return False
+
+
+def _style_cv_worksheet(ws, df_sheet: pd.DataFrame):
+    """Định dạng bảng Excel cho báo cáo CV% tích lũy."""
+    header_fill = PatternFill(start_color="1B5E20", end_color="1B5E20", fill_type="solid")
+    zebra_fill = PatternFill(start_color="F4FAF6", end_color="F4FAF6", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    body_font = Font(name="Calibri", size=10, color="0A2540")
+    thin_side = Side(style="thin", color="D0D7DE")
+    border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+    n_cols = len(df_sheet.columns)
+    n_rows = len(df_sheet) + 1
+
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 24
+    if n_cols > 0:
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{max(n_rows, 1)}"
+
+    col_names = list(df_sheet.columns)
+    for c_idx in range(1, n_cols + 1):
+        cell = ws.cell(row=1, column=c_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    for r_idx in range(2, n_rows + 1):
+        ws.row_dimensions[r_idx].height = 20
+        is_zebra = (r_idx % 2 == 1)
+        for c_idx in range(1, n_cols + 1):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            col_name = col_names[c_idx - 1]
+            cell.font = body_font
+            cell.border = border
+            if is_zebra:
+                cell.fill = zebra_fill
+
+            if col_name in ("Pooled Mean", "Cumulative CV %"):
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                if cell.value is not None and cell.value != "":
+                    cell.number_format = "0.000"
+            elif col_name in ("Lots", "Total Points (N)"):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                if cell.value is not None and cell.value != "":
+                    cell.number_format = "0"
+            elif col_name in ("Quarter", "Analyte", "Unit"):
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    for c_idx, col_name in enumerate(col_names, start=1):
+        max_len = len(str(col_name))
+        if not df_sheet.empty:
+            for val in df_sheet[col_name]:
+                if pd.notna(val):
+                    max_len = max(max_len, len(str(val)))
+        ws.column_dimensions[get_column_letter(c_idx)].width = min(max(max_len + 4, 11), 42)
 
 
 def _calc_pooled_cv(df_sub: pd.DataFrame) -> Dict[str, Any]:
@@ -203,10 +266,11 @@ def _render_cv_quarter_summary_table(
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         df_display.to_excel(writer, index=False, sheet_name="CV_Summary")
+        _style_cv_worksheet(writer.sheets["CV_Summary"], df_display)
     safe_q_fname = quarter_code.replace("/", "_").replace(" ", "_")
 
     act_c1.download_button(
-        f":material/table_view: Export ({quarter_code})",
+        f":material/table_view: Export Excel ({quarter_code})",
         data=excel_buf.getvalue(),
         file_name=f"IQC_CV_{safe_q_fname}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -340,12 +404,14 @@ def render_cv_manager_page():
                 ]
                 saved_tests_in_quarter = set(sub_q_saved["test_code"].astype(str).str.strip().str.upper().tolist())
 
-            # Khóa cứng trạng thái Analyte theo từng máy để không bị reset về test đầu tiên sau khi Save
+            # Khóa cứng trạng thái Analyte theo từng máy, không reset về index 0 khi nhãn (lots / ✅) thay đổi
             if "cv_persisted_test_by_inst" not in st.session_state:
                 st.session_state["cv_persisted_test_by_inst"] = {}
 
-            def _on_test_change(inst_name: str):
-                picked_t = st.session_state.get("cv_test_sel")
+            test_widget_key = f"cv_test_sel_{sel_inst}"
+
+            def _on_test_change(inst_name: str, w_key: str):
+                picked_t = st.session_state.get(w_key)
                 if picked_t:
                     st.session_state["cv_persisted_test_by_inst"][inst_name] = picked_t
                 st.session_state["cv_lot_edit_mode"] = "+ New Lot"
@@ -354,16 +420,19 @@ def render_cv_manager_page():
             if persisted_test not in test_codes_list:
                 persisted_test = test_codes_list[0]
                 st.session_state["cv_persisted_test_by_inst"][sel_inst] = persisted_test
-            st.session_state["cv_test_sel"] = persisted_test
+
+            default_test_idx = test_codes_list.index(persisted_test)
 
             sel_test = c_test.selectbox(
                 f"Analyte ({len(test_codes_list)})",
                 options=test_codes_list,
+                index=default_test_idx,
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_tests_in_quarter else "") + test_label_map.get(k, k),
-                key="cv_test_sel",
+                key=test_widget_key,
                 on_change=_on_test_change,
-                args=(sel_inst,),
+                args=(sel_inst, test_widget_key),
             )
+            st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
 
             num_levels = c_lv.selectbox(
                 "Levels",
@@ -468,7 +537,6 @@ def render_cv_manager_page():
                 chosen = st.session_state.get("cv_lot_edit_mode", "+ New Lot")
                 pre = lot_map.get(chosen)
                 if not pre:
-                    # Nếu chọn lại "+ New Lot", giữ nguyên toàn bộ số Lot và ngày tháng hiện tại
                     return
 
                 lv_val = int(pre.get("level_no", 1) or 1)
@@ -507,7 +575,7 @@ def render_cv_manager_page():
                     st.session_state["cv_in_n"] = max(1, int(float(pre.get("n_points"))))
 
             r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns(
-                [1.45, 1.05, 1.0, 0.95, 1.05, 1.05], vertical_alignment="bottom"
+                [1.25, 0.95, 0.85, 0.85, 1.25, 1.25], vertical_alignment="bottom"
             )
 
             r1_c1.selectbox(
@@ -649,9 +717,13 @@ def render_cv_manager_page():
             if r2_c6.button(":material/save: Save Lot Data", type="primary", use_container_width=True):
                 if not str(lot_no_in).strip():
                     queue_popup("Missing Lot No", "Please enter a Lot Number before saving.", "warning")
+                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
                 elif float(cv_in) <= 0:
                     queue_popup("Invalid CV%", "CV% must be greater than 0.", "warning")
+                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
                 else:
                     from_date_str = from_date_in.strftime("%d/%m/%Y") if isinstance(from_date_in, date) else ""
@@ -681,6 +753,8 @@ def render_cv_manager_page():
                         f"Saved Lot {lot_no_in} ({period_saved} | {level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, {n_msg}).",
                         "success",
                     )
+                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
 
         # ======================================================================
@@ -830,7 +904,6 @@ def render_cv_manager_page():
                             "Please select at least 1 lot before saving.",
                             "warning",
                         )
-                        st.rerun()
                     else:
                         save_cv_summary_records(
                             instrument_name=sel_inst,
@@ -843,7 +916,9 @@ def render_cv_manager_page():
                             f"Saved Cumulative CV% for {sel_test} ({sel_inst}) to {active_quarter_period}.",
                             "success",
                         )
-                        st.rerun()
+                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(test_widget_key, None)
+                    st.rerun()
 
                 del_lot_map = {
                     f"[#{int(r['id'])}] {r['level_name']} — Lot {r['lot_no']} ({_format_lot_period(r.get('start_date', ''), r.get('cutoff_date', ''))} | CV={r['cv_pct']:.3f}%)": int(r["id"])
@@ -858,6 +933,8 @@ def render_cv_manager_page():
                 if act_b3.button(":material/delete: Delete Lot", type="secondary", use_container_width=True):
                     delete_iqc_lot(del_lot_map[sel_del_lot])
                     queue_popup("Deleted Lot", f"Removed {sel_del_lot}.", "error")
+                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
+                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
 
     # ==========================================================================
@@ -925,10 +1002,12 @@ def render_cv_manager_page():
                             "chosen_cv_pct": "Cumulative CV %",
                             "updated_at": "Updated",
                         })
-                        sheet_df.to_excel(writer, index=False, sheet_name=f"Q{q_i}_{sel_view_year}")
+                        sheet_name = f"Q{q_i}_{sel_view_year}"
+                        sheet_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                        _style_cv_worksheet(writer.sheets[sheet_name], sheet_df)
 
                 f_col3.download_button(
-                    f":material/download: Export All (Q1–Q4 {sel_view_year})",
+                    f":material/download: Export Excel All (Q1–Q4 {sel_view_year})",
                     data=full_year_buf.getvalue(),
                     file_name=f"IQC_CV_All_Quarters_{sel_view_year}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
