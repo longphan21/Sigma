@@ -275,10 +275,20 @@ elif page == "Batch Manager":
             excel_buf = io.BytesIO()
             with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
                 df_export.to_excel(writer, index=False, sheet_name="EQA_Results")
+            inst_raw = str(sel_batch.get("instrument_name", "") or "EQA").strip()
+            for ch in ("\\", "/", ":", "*", "?", '"', "<", ">", "|"):
+                inst_raw = inst_raw.replace(ch, "-")
+            inst_clean = " ".join(inst_raw.split())
+            b_no_raw = str(sel_batch.get("batch_no", "")).strip()
+            b_no_disp = str(int(b_no_raw)) if b_no_raw.isdigit() else b_no_raw
+            my_raw = str(sel_batch.get("month_year", "")).strip()
+            yr_part = my_raw.split("/")[-1].strip() if "/" in my_raw else my_raw.replace("/", "-")
+            batch_excel_fname = f"{inst_clean} - Đợt {b_no_disp}-{yr_part} - EQA.xlsx"
+
             act1.download_button(
                 ":material/table_view: Export Excel",
                 data=excel_buf.getvalue(),
-                file_name=f"EQA_{sel_batch['program_code']}_B{sel_batch['batch_no']}_{sel_batch['month_year'].replace('/', '-')}.xlsx",
+                file_name=batch_excel_fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )

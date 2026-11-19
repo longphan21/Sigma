@@ -1,4 +1,5 @@
 import io
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
 import pandas as pd
@@ -19,6 +20,48 @@ QUARTER_OPTIONS: List[Tuple[int, str, int]] = [
     (3, "Q3 (Sep)", 9),
     (4, "Q4 (Dec)", 12),
 ]
+
+
+def _sanitize_filename_part(text: str) -> str:
+    s = str(text or "").strip()
+    for ch in ("\\", "/", ":", "*", "?", '"', "<", ">", "|"):
+        s = s.replace(ch, "-")
+    return " ".join(s.split())
+
+
+def _build_excel_filename(
+    df_q: pd.DataFrame,
+    quarter_code: str,
+    selected_inst: str = "All Instruments",
+    suffix: str = "",
+) -> str:
+    """Tạo tên file Excel theo định dạng: Dòng máy - Đợt X-YYYY.xlsx"""
+    if selected_inst and selected_inst != "All Instruments":
+        inst_part = selected_inst
+    elif not df_q.empty and "instrument_name" in df_q.columns:
+        unique_insts = [
+            str(x).strip()
+            for x in df_q["instrument_name"].dropna().unique().tolist()
+            if str(x).strip()
+        ]
+        inst_part = unique_insts[0] if len(unique_insts) == 1 else "Tất cả dòng máy"
+    else:
+        inst_part = "Tất cả dòng máy"
+
+    q_str = str(quarter_code or "").strip()
+    m_q = re.match(r"^Q([1-4])/(\d{4})$", q_str, re.IGNORECASE)
+    if m_q:
+        period_part = f"Đợt {m_q.group(1)}-{m_q.group(2)}"
+    elif q_str.startswith("All_"):
+        yr_part = q_str.replace("All_", "").strip()
+        period_part = f"Đợt 1-4-{yr_part}"
+    else:
+        period_part = q_str.replace("/", "-")
+
+    base = f"{_sanitize_filename_part(inst_part)} - {_sanitize_filename_part(period_part)}"
+    if suffix:
+        base = f"{base} - {suffix}"
+    return f"{base}.xlsx"
 
 
 def _compute_exact_monthly_bias(df_test: pd.DataFrame) -> pd.DataFrame:
@@ -82,6 +125,7 @@ def _render_quarter_summary_table(
     df_q: pd.DataFrame,
     quarter_code: str,
     key_suffix: str,
+    selected_inst: str = "All Instruments",
 ):
     if df_q.empty:
         render_html(f'<div class="search-result-pill">No saved records for <b>{quarter_code}</b>.</div>')
@@ -122,12 +166,12 @@ def _render_quarter_summary_table(
     excel_buf = io.BytesIO()
     with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
         df_display.to_excel(writer, index=False, sheet_name="Bias_Summary")
-    safe_q_fname = quarter_code.replace("/", "_").replace(" ", "_")
+    export_fname = _build_excel_filename(df_q, quarter_code, selected_inst=selected_inst, suffix="Bias")
 
     act_c1.download_button(
         f":material/table_view: Export ({quarter_code})",
         data=excel_buf.getvalue(),
-        file_name=f"EQA_Bias_{safe_q_fname}.xlsx",
+        file_name=export_fname,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         key=f"dl_btn_{key_suffix}",
@@ -536,10 +580,16 @@ def render_bias_calculator_page():
                     if not wrote_any:
                         pd.DataFrame().to_excel(writer, index=False, sheet_name="Empty")
 
+                all_q_fname = _build_excel_filename(
+                    df_filtered_saved,
+                    f"All_{sel_view_year}",
+                    selected_inst=sel_view_inst,
+                    suffix="Bias",
+                )
                 f_col3.download_button(
                     f":material/download: Export All (Q1–Q4 {sel_view_year})",
                     data=full_year_buf.getvalue(),
-                    file_name=f"EQA_Bias_All_Quarters_{sel_view_year}.xlsx",
+                    file_name=all_q_fname,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     key="dl_full_year_quarters_btn",
@@ -571,6 +621,7 @@ def render_bias_calculator_page():
                             df_q=sub_df,
                             quarter_code=q_code,
                             key_suffix=f"q{q_no}_{sel_view_year}",
+                            selected_inst=sel_view_inst,
                         )
 
                 with q_tabs[4]:
@@ -578,4 +629,5 @@ def render_bias_calculator_page():
                         df_q=df_filtered_saved,
                         quarter_code=f"All_{sel_view_year}",
                         key_suffix=f"all_q_{sel_view_year}",
+                        selected_inst=sel_view_inst,
                     )
