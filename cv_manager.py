@@ -27,6 +27,9 @@ HEMATOLOGY_NULL_DEFAULT_TESTS = {
     "HB", "HGB", "RBC", "RBC-OPT", "WBC", "PLT", "PLT-OPT", "HCT", "MCV", "MCH", "MCHC"
 }
 
+MIN_PICK_DATE = date(2020, 1, 1)
+MAX_PICK_DATE = date(2035, 12, 31)
+
 
 def _format_lot_period(start_d: Any, end_d: Any) -> str:
     s = str(start_d or "").strip()
@@ -34,6 +37,32 @@ def _format_lot_period(start_d: Any, end_d: Any) -> str:
     if s and e:
         return f"{s} – {e}"
     return s or e or "-"
+
+
+def _parse_date_safe(val: Any, fallback: date) -> date:
+    """Chuyển chuỗi ngày (DD/MM/YYYY, MM/YYYY, YYYY-MM-DD) sang đối tượng date an toàn cho lịch."""
+    if isinstance(val, datetime):
+        d = val.date()
+    elif isinstance(val, date):
+        d = val
+    else:
+        s = str(val or "").strip()
+        d = None
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%m/%Y"):
+            try:
+                parsed = datetime.strptime(s, fmt)
+                d = date(parsed.year, parsed.month, 1) if fmt == "%m/%Y" else parsed.date()
+                break
+            except ValueError:
+                continue
+        if d is None:
+            d = fallback
+
+    if d < MIN_PICK_DATE:
+        return MIN_PICK_DATE
+    if d > MAX_PICK_DATE:
+        return MAX_PICK_DATE
+    return d
 
 
 def _is_valid_pos_num(val: Any) -> bool:
@@ -265,6 +294,10 @@ def render_cv_manager_page():
 
             sel_inst = c_inst.selectbox("Instrument", inst_list, key="cv_inst_sel")
 
+            if st.session_state.get("cv_prev_inst") != sel_inst:
+                st.session_state["cv_prev_inst"] = sel_inst
+                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
+
             catalog_map: Dict[str, Tuple[str, str, str]] = {}
             if not df_eqa.empty:
                 df_inst_eqa = df_eqa[df_eqa["instrument_name"] == sel_inst]
@@ -307,11 +340,29 @@ def render_cv_manager_page():
                 ]
                 saved_tests_in_quarter = set(sub_q_saved["test_code"].astype(str).str.strip().str.upper().tolist())
 
+            # Khóa cứng trạng thái Analyte theo từng máy để không bị reset về test đầu tiên sau khi Save
+            if "cv_persisted_test_by_inst" not in st.session_state:
+                st.session_state["cv_persisted_test_by_inst"] = {}
+
+            def _on_test_change(inst_name: str):
+                picked_t = st.session_state.get("cv_test_sel")
+                if picked_t:
+                    st.session_state["cv_persisted_test_by_inst"][inst_name] = picked_t
+                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
+
+            persisted_test = st.session_state["cv_persisted_test_by_inst"].get(sel_inst)
+            if persisted_test not in test_codes_list:
+                persisted_test = test_codes_list[0]
+                st.session_state["cv_persisted_test_by_inst"][sel_inst] = persisted_test
+            st.session_state["cv_test_sel"] = persisted_test
+
             sel_test = c_test.selectbox(
                 f"Analyte ({len(test_codes_list)})",
                 options=test_codes_list,
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_tests_in_quarter else "") + test_label_map.get(k, k),
-                key=f"cv_test_sel_{sel_inst}",
+                key="cv_test_sel",
+                on_change=_on_test_change,
+                args=(sel_inst,),
             )
 
             num_levels = c_lv.selectbox(
@@ -357,7 +408,7 @@ def render_cv_manager_page():
             """)
 
         # ======================================================================
-        # STEP 2: ADD / UPDATE IQC LOT FOR SELECTED ANALYTE
+        # STEP 2: ADD / UPDATE IQC LOT (GIỮ NGUYÊN HIỆN TRẠNG KHI ĐỔI LEVEL/TEST/SAVE)
         # ======================================================================
         with st.container(border=True):
             st.markdown(f"#### :material/inventory_2: 2. Add / Update IQC Lot — **{sel_test}** ({full_name_str})")
@@ -372,76 +423,145 @@ def render_cv_manager_page():
                     existing_lot_opts.append(lbl)
                     lot_lookup[lbl] = r.to_dict()
 
-            r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns([1.45, 1.05, 1.0, 0.95, 1.05, 1.05], vertical_alignment="bottom")
-
-            sel_edit_mode = r1_c1.selectbox(
-                "Edit Existing / New",
-                options=existing_lot_opts,
-                key=f"cv_lot_edit_mode_{sel_inst}_{sel_test}",
-            )
-            pre = lot_lookup.get(sel_edit_mode, {})
-
-            default_lv_idx = 0
-            if pre and int(pre.get("level_no", 1)) <= num_levels:
-                default_lv_idx = int(pre.get("level_no", 1)) - 1
-
-            sel_lv_no = r1_c2.selectbox(
-                "QC Level",
-                options=list(range(1, num_levels + 1)),
-                index=default_lv_idx,
-                format_func=lambda idx: level_names[idx - 1],
-                key=f"cv_in_lv_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
-
-            default_lot_str = str(pre.get("lot_no", "")).strip() or f"LOT-L{sel_lv_no}"
-            lot_no_in = r1_c3.text_input(
-                "Lot No",
-                value=default_lot_str,
-                placeholder="e.g., 1699UN",
-                key=f"cv_in_lotno_{sel_inst}_{sel_test}_{sel_edit_mode}_{sel_lv_no}",
-            )
-
-            status_opts = ["Active", "Closed"]
-            default_st_idx = 0 if str(pre.get("lot_status", "Active")).strip() != "Closed" else 1
-            status_in = r1_c4.selectbox(
-                "Lot Status",
-                options=status_opts,
-                index=default_st_idx,
-                format_func=lambda s: "🟢 Active" if s == "Active" else "🔒 Closed",
-                key=f"cv_in_status_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
-
-            from_date_in = r1_c5.text_input(
-                "From Date (Từ ngày)",
-                value=str(pre.get("start_date", "") or f"01/01/{sel_year}"),
-                placeholder="DD/MM/YYYY",
-                key=f"cv_in_sdate_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
-
-            to_date_in = r1_c6.text_input(
-                "To Date (Đến ngày)",
-                value=str(pre.get("cutoff_date", "") or date.today().strftime("%d/%m/%Y")),
-                placeholder="DD/MM/YYYY",
-                key=f"cv_in_cdate_{sel_inst}_{sel_test}_{sel_edit_mode}",
-            )
-
-            r2_c1, r2_c2, r2_c3, r2_c4, r2_c5, r2_c6 = st.columns([1.25, 0.95, 0.95, 0.95, 1.2, 1.2], vertical_alignment="bottom")
-
             mode_options = [
                 "Auto (SD/Mean)",
                 "Manual CV%",
                 "CV% Only (Null Mean/SD/n)",
             ]
-            if pre:
-                default_mode_idx = 2 if not _is_valid_pos_num(pre.get("n_points")) else 0
-            else:
-                default_mode_idx = 2 if sel_test.strip().upper() in HEMATOLOGY_NULL_DEFAULT_TESTS else 0
+
+            # Tự động bật chế độ Null khi chuyển qua lại giữa nhóm Huyết học và Sinh hóa, không reset nếu cùng nhóm
+            cur_is_heme = sel_test.strip().upper() in HEMATOLOGY_NULL_DEFAULT_TESTS
+            if (
+                "cv_in_calc_mode" not in st.session_state
+                or st.session_state.get("cv_prev_is_heme") != cur_is_heme
+            ):
+                st.session_state["cv_prev_is_heme"] = cur_is_heme
+                st.session_state["cv_in_calc_mode"] = (
+                    "CV% Only (Null Mean/SD/n)" if cur_is_heme else "Auto (SD/Mean)"
+                )
+
+            # Khởi tạo 1 lần duy nhất các trường nhập liệu Bước 2 để không bị mất khi đổi Level/Analyte hoặc bấm Save
+            if "cv_lot_edit_mode" not in st.session_state or st.session_state["cv_lot_edit_mode"] not in existing_lot_opts:
+                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
+            if "cv_in_lv" not in st.session_state:
+                st.session_state["cv_in_lv"] = 1
+            if int(st.session_state["cv_in_lv"]) > num_levels:
+                st.session_state["cv_in_lv"] = num_levels
+            if "cv_in_lotno" not in st.session_state:
+                st.session_state["cv_in_lotno"] = ""
+            if "cv_in_status" not in st.session_state:
+                st.session_state["cv_in_status"] = "Active"
+            if "cv_in_sdate" not in st.session_state:
+                st.session_state["cv_in_sdate"] = _parse_date_safe(f"01/01/{sel_year}", date(2026, 1, 1))
+            if "cv_in_cdate" not in st.session_state:
+                st.session_state["cv_in_cdate"] = _parse_date_safe(date.today(), date.today())
+            if "cv_in_mean" not in st.session_state:
+                st.session_state["cv_in_mean"] = 100.0
+            if "cv_in_sd" not in st.session_state:
+                st.session_state["cv_in_sd"] = 2.0
+            if "cv_in_cv_man" not in st.session_state:
+                st.session_state["cv_in_cv_man"] = 2.0
+            if "cv_in_n" not in st.session_state:
+                st.session_state["cv_in_n"] = 20
+
+            def _on_edit_lot_change(lot_map: Dict[str, Dict[str, Any]], max_lv: int):
+                chosen = st.session_state.get("cv_lot_edit_mode", "+ New Lot")
+                pre = lot_map.get(chosen)
+                if not pre:
+                    # Nếu chọn lại "+ New Lot", giữ nguyên toàn bộ số Lot và ngày tháng hiện tại
+                    return
+
+                lv_val = int(pre.get("level_no", 1) or 1)
+                st.session_state["cv_in_lv"] = min(max(1, lv_val), max_lv)
+                st.session_state["cv_in_lotno"] = str(pre.get("lot_no", "")).strip()
+                st.session_state["cv_in_status"] = (
+                    "Closed" if str(pre.get("lot_status", "Active")).strip().lower() == "closed" else "Active"
+                )
+                st.session_state["cv_in_sdate"] = _parse_date_safe(
+                    pre.get("start_date"), date(int(sel_year), 1, 1)
+                )
+                st.session_state["cv_in_cdate"] = _parse_date_safe(
+                    pre.get("cutoff_date"), date.today()
+                )
+
+                if not _is_valid_pos_num(pre.get("n_points")):
+                    st.session_state["cv_in_calc_mode"] = "CV% Only (Null Mean/SD/n)"
+                    st.session_state["cv_in_cv_man"] = (
+                        max(0.001, float(pre.get("cv_pct")))
+                        if _is_valid_pos_num(pre.get("cv_pct"))
+                        else 2.0
+                    )
+                else:
+                    st.session_state["cv_in_calc_mode"] = "Auto (SD/Mean)"
+                    st.session_state["cv_in_mean"] = (
+                        float(pre.get("mean_val")) if _is_valid_pos_num(pre.get("mean_val")) else 100.0
+                    )
+                    st.session_state["cv_in_sd"] = (
+                        float(pre.get("sd_val")) if _is_valid_pos_num(pre.get("sd_val")) else 2.0
+                    )
+                    st.session_state["cv_in_cv_man"] = (
+                        max(0.001, float(pre.get("cv_pct")))
+                        if _is_valid_pos_num(pre.get("cv_pct"))
+                        else 2.0
+                    )
+                    st.session_state["cv_in_n"] = max(1, int(float(pre.get("n_points"))))
+
+            r1_c1, r1_c2, r1_c3, r1_c4, r1_c5, r1_c6 = st.columns(
+                [1.45, 1.05, 1.0, 0.95, 1.05, 1.05], vertical_alignment="bottom"
+            )
+
+            r1_c1.selectbox(
+                "Edit Existing / New",
+                options=existing_lot_opts,
+                key="cv_lot_edit_mode",
+                on_change=_on_edit_lot_change,
+                args=(lot_lookup, num_levels),
+            )
+
+            sel_lv_no = r1_c2.selectbox(
+                "QC Level",
+                options=list(range(1, num_levels + 1)),
+                format_func=lambda idx: level_names[idx - 1],
+                key="cv_in_lv",
+            )
+
+            lot_no_in = r1_c3.text_input(
+                "Lot No",
+                placeholder="e.g., 62159",
+                key="cv_in_lotno",
+            )
+
+            status_in = r1_c4.selectbox(
+                "Lot Status",
+                options=["Active", "Closed"],
+                format_func=lambda s: "🟢 Active" if s == "Active" else "🔒 Closed",
+                key="cv_in_status",
+            )
+
+            from_date_in = r1_c5.date_input(
+                "From Date (Từ ngày)",
+                min_value=MIN_PICK_DATE,
+                max_value=MAX_PICK_DATE,
+                format="DD/MM/YYYY",
+                key="cv_in_sdate",
+            )
+
+            to_date_in = r1_c6.date_input(
+                "To Date (Đến ngày)",
+                min_value=MIN_PICK_DATE,
+                max_value=MAX_PICK_DATE,
+                format="DD/MM/YYYY",
+                key="cv_in_cdate",
+            )
+
+            r2_c1, r2_c2, r2_c3, r2_c4, r2_c5, r2_c6 = st.columns(
+                [1.25, 0.95, 0.95, 0.95, 1.2, 1.2], vertical_alignment="bottom"
+            )
 
             calc_mode = r2_c1.selectbox(
                 "CV% Input Mode",
                 options=mode_options,
-                index=default_mode_idx,
-                key=f"cv_calc_mode_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                key="cv_in_calc_mode",
             )
 
             is_null_mode = (calc_mode == "CV% Only (Null Mean/SD/n)")
@@ -451,60 +571,51 @@ def render_cv_manager_page():
                     f"Mean ({unit_str or 'val'})",
                     value="Null",
                     disabled=True,
-                    key=f"cv_null_mean_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_null_mean_disp",
                 )
                 r2_c3.text_input(
                     f"SD ({unit_str or 'val'})",
                     value="Null",
                     disabled=True,
-                    key=f"cv_null_sd_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_null_sd_disp",
                 )
-                default_manual_cv = float(pre.get("cv_pct", 2.0) or 2.0) if _is_valid_pos_num(pre.get("cv_pct")) else 2.0
                 cv_in = r2_c4.number_input(
                     "CV % (Manual)",
                     min_value=0.001,
                     max_value=200.0,
-                    value=max(0.001, default_manual_cv),
                     step=0.05,
                     format="%.3f",
-                    key=f"cv_in_cv_nullmode_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_in_cv_man",
                 )
                 r2_c5.text_input(
                     "Total QC Points (n)",
                     value="Null",
                     disabled=True,
-                    key=f"cv_null_n_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_null_n_disp",
                 )
                 mean_to_save: Optional[float] = None
                 sd_to_save: Optional[float] = None
                 n_to_save: Optional[int] = None
             else:
-                pre_mean = float(pre.get("mean_val")) if _is_valid_pos_num(pre.get("mean_val")) else 100.0
-                pre_sd = float(pre.get("sd_val")) if _is_valid_pos_num(pre.get("sd_val")) else 2.0
-                pre_n = int(float(pre.get("n_points"))) if _is_valid_pos_num(pre.get("n_points")) else 20
-
                 mean_in = r2_c2.number_input(
                     f"Mean ({unit_str or 'val'})",
                     min_value=0.0,
                     max_value=1000000.0,
-                    value=pre_mean,
                     step=0.1,
                     format="%.3f",
-                    key=f"cv_in_mean_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_in_mean",
                 )
 
                 sd_in = r2_c3.number_input(
                     f"SD ({unit_str or 'val'})",
                     min_value=0.0,
                     max_value=100000.0,
-                    value=pre_sd,
                     step=0.01,
                     format="%.4f",
-                    key=f"cv_in_sd_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_in_sd",
                 )
 
                 auto_cv = round((sd_in / mean_in) * 100.0, 3) if mean_in > 0 else 0.0
-                default_manual_cv = float(pre.get("cv_pct", auto_cv) or auto_cv) if _is_valid_pos_num(pre.get("cv_pct")) else auto_cv
 
                 if calc_mode == "Auto (SD/Mean)":
                     cv_in = r2_c4.number_input(
@@ -512,26 +623,24 @@ def render_cv_manager_page():
                         value=float(auto_cv),
                         format="%.3f",
                         disabled=True,
-                        key=f"cv_in_cv_auto_{sel_inst}_{sel_test}_{mean_in}_{sd_in}",
+                        key=f"cv_in_cv_auto_{auto_cv}",
                     )
                 else:
                     cv_in = r2_c4.number_input(
                         "CV % (Manual)",
                         min_value=0.001,
                         max_value=200.0,
-                        value=max(0.001, default_manual_cv),
                         step=0.05,
                         format="%.3f",
-                        key=f"cv_in_cv_man_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                        key="cv_in_cv_man",
                     )
 
                 n_points_in = r2_c5.number_input(
                     "Total QC Points (n)",
                     min_value=1,
                     max_value=10000,
-                    value=max(1, pre_n),
                     step=1,
-                    key=f"cv_in_n_{sel_inst}_{sel_test}_{sel_edit_mode}",
+                    key="cv_in_n",
                 )
                 mean_to_save = float(mean_in)
                 sd_to_save = float(sd_in)
@@ -545,6 +654,9 @@ def render_cv_manager_page():
                     queue_popup("Invalid CV%", "CV% must be greater than 0.", "warning")
                     st.rerun()
                 else:
+                    from_date_str = from_date_in.strftime("%d/%m/%Y") if isinstance(from_date_in, date) else ""
+                    to_date_str = to_date_in.strftime("%d/%m/%Y") if isinstance(to_date_in, date) else ""
+
                     save_iqc_lot(
                         instrument_name=sel_inst,
                         test_code=sel_test,
@@ -553,8 +665,8 @@ def render_cv_manager_page():
                         level_no=int(sel_lv_no),
                         level_name=level_names[int(sel_lv_no) - 1],
                         lot_no=str(lot_no_in).strip(),
-                        start_date=from_date_in,
-                        cutoff_date=to_date_in,
+                        start_date=from_date_str,
+                        cutoff_date=to_date_str,
                         lot_status=status_in,
                         mean_val=mean_to_save,
                         sd_val=sd_to_save,
@@ -562,7 +674,7 @@ def render_cv_manager_page():
                         n_points=n_to_save,
                         notes="Null Mean/SD/n" if is_null_mode else "",
                     )
-                    period_saved = _format_lot_period(from_date_in, to_date_in)
+                    period_saved = _format_lot_period(from_date_str, to_date_str)
                     n_msg = "n=Null" if n_to_save is None else f"n={n_to_save}"
                     queue_popup(
                         "Saved Lot Successfully",
