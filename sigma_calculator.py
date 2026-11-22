@@ -7,7 +7,14 @@ import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from ui_theme import render_page_banner, render_html, queue_popup, format_status_badge_html
+from ui_theme import (
+    render_page_banner,
+    render_html,
+    queue_popup,
+    format_status_badge_html,
+    persistent_selectbox,
+    render_step_lock_header,
+)
 from database import (
     get_all_results_joined,
     get_all_bias_summaries,
@@ -388,25 +395,40 @@ def render_sigma_calculator_page():
 
     with tab_calc:
         # ======================================================================
-        # STEP 1: CONFIGURATION (QUARTER, INSTRUMENT, ANALYTE, LEVELS)
+        # STEP 1: CONFIGURATION (STATE PERSISTENCE + LOCK STEP 1)
         # ======================================================================
         with st.container(border=True):
-            st.markdown("#### :material/tune: 1. Configuration")
+            step1_locked = render_step_lock_header(
+                title_md="#### :material/tune: 1. Configuration",
+                lock_key="_lock_sig_step1",
+                step_label="Step 1",
+                unlock_also_keys=["_lock_sig_step2"],
+            )
+
             c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.85, 0.65, 1.70, 1.80, 0.80], vertical_alignment="bottom")
 
+            def _unlock_sig_step2(_val=None):
+                st.session_state["_lock_sig_step2"] = False
+
             q_idx_map = {q_no: label for q_no, label, _ in QUARTER_OPTIONS}
-            sel_q_no = c_q.selectbox(
-                "Quarter",
+            sel_q_no = persistent_selectbox(
+                c_q,
+                label="Quarter",
                 options=[1, 2, 3, 4],
+                persist_key="_persist_sig_q_no",
+                default_value=3,
                 format_func=lambda x: q_idx_map[x],
-                index=2,
-                key="sig_quarter_no_sel",
+                disabled=step1_locked,
+                on_value_change=_unlock_sig_step2,
             )
-            sel_year = c_yr.selectbox(
-                "Year",
+            sel_year = persistent_selectbox(
+                c_yr,
+                label="Year",
                 options=years_in_db,
-                index=0,
-                key="sig_year_sel",
+                persist_key="_persist_sig_year",
+                default_value=years_in_db[0],
+                disabled=step1_locked,
+                on_value_change=_unlock_sig_step2,
             )
             active_quarter_period = f"Q{sel_q_no}/{sel_year}"
 
@@ -416,7 +438,15 @@ def render_sigma_calculator_page():
                     inst_set.update(df_src["instrument_name"].dropna().unique().tolist())
             inst_list = sorted([x for x in inst_set if str(x).strip()])
 
-            sel_inst = c_inst.selectbox("Instrument", inst_list, key="sig_inst_sel")
+            sel_inst = persistent_selectbox(
+                c_inst,
+                label="Instrument",
+                options=inst_list,
+                persist_key="_persist_sig_inst",
+                default_value=inst_list[0],
+                disabled=step1_locked,
+                on_value_change=_unlock_sig_step2,
+            )
 
             catalog_map: Dict[str, Tuple[str, str, str]] = {}
             if not df_eqa.empty:
@@ -456,40 +486,25 @@ def render_sigma_calculator_page():
 
             test_label_map = {x[0]: f"{x[0]} — {x[1]}" for x in test_items}
 
-            # Khóa cứng Analyte đang chọn theo từng máy để không bị reset sau khi Save
-            if "sig_persisted_test_by_inst" not in st.session_state:
-                st.session_state["sig_persisted_test_by_inst"] = {}
-
-            sig_test_wkey = f"sig_test_sel_{sel_inst}"
-
-            def _on_sig_test_change(inst_name: str, w_key: str):
-                picked_t = st.session_state.get(w_key)
-                if picked_t:
-                    st.session_state["sig_persisted_test_by_inst"][inst_name] = picked_t
-
-            persisted_t = st.session_state["sig_persisted_test_by_inst"].get(sel_inst)
-            if persisted_t not in test_codes_list:
-                persisted_t = test_codes_list[0]
-                st.session_state["sig_persisted_test_by_inst"][sel_inst] = persisted_t
-
-            default_sig_idx = test_codes_list.index(persisted_t)
-
-            sel_test = c_test.selectbox(
-                f"Analyte ({len(test_codes_list)})",
+            sel_test = persistent_selectbox(
+                c_test,
+                label="Analyte",
                 options=test_codes_list,
-                index=default_sig_idx,
+                persist_key=f"_persist_sig_test::{sel_inst}",
+                default_value=test_codes_list[0],
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_sigma_in_quarter else "") + test_label_map.get(k, k),
-                key=sig_test_wkey,
-                on_change=_on_sig_test_change,
-                args=(sel_inst, sig_test_wkey),
+                disabled=step1_locked,
+                on_value_change=_unlock_sig_step2,
             )
-            st.session_state["sig_persisted_test_by_inst"][sel_inst] = sel_test
 
-            num_levels = c_lv.selectbox(
-                "Levels",
+            num_levels = persistent_selectbox(
+                c_lv,
+                label="Levels",
                 options=[2, 3, 1],
+                persist_key=f"_persist_sig_levels::{sel_inst}",
+                default_value=2,
                 format_func=lambda x: f"{x} Levels" if x > 1 else "1 Level",
-                key="sig_num_levels",
+                disabled=step1_locked,
             )
 
             cur_test_info = catalog_map.get(sel_test.upper(), (sel_test, sel_test, ""))
@@ -544,10 +559,15 @@ def render_sigma_calculator_page():
             """)
 
         # ======================================================================
-        # STEP 2: SELECT OPTIMAL TEa% SOURCE FOR THIS ANALYTE
+        # STEP 2: SELECT OPTIMAL TEa% SOURCE (STATE PERSISTENCE + LOCK STEP 2)
         # ======================================================================
         with st.container(border=True):
-            st.markdown(f"#### :material/rule: 2. Select Optimal TEa% — **{sel_test}** ({full_name_str})")
+            step2_locked = render_step_lock_header(
+                title_md=f"#### :material/rule: 2. Select Optimal TEa% — **{sel_test}** ({full_name_str})",
+                lock_key="_lock_sig_step2",
+                step_label="Step 2",
+                lock_also_keys=["_lock_sig_step1"],
+            )
 
             tea_opts_map: Dict[str, Tuple[str, float]] = {}
             if not sub_tea.empty:
@@ -561,10 +581,13 @@ def render_sigma_calculator_page():
             tea_opts_list = list(tea_opts_map.keys()) + ["✏️ Manual / Custom TEa%"]
 
             t_col1, t_col2, t_col3 = st.columns([2.2, 1.2, 1.6], vertical_alignment="bottom")
-            sel_tea_label = t_col1.selectbox(
-                "Available TEa% Sources (from Tab 2)",
+            sel_tea_label = persistent_selectbox(
+                t_col1,
+                label="Available TEa% Sources (from Tab 2)",
                 options=tea_opts_list,
-                key=f"sig_tea_src_sel_{sel_inst}_{sel_test}",
+                persist_key=f"_persist_sig_tea::{sel_inst}::{sel_test}",
+                default_value=tea_opts_list[0],
+                disabled=step2_locked,
             )
 
             if sel_tea_label != "✏️ Manual / Custom TEa%":
@@ -581,12 +604,14 @@ def render_sigma_calculator_page():
                 step=0.5,
                 format="%.2f",
                 key=f"sig_tea_val_{sel_inst}_{sel_test}_{sel_tea_label}",
+                disabled=step2_locked,
             )
 
             chosen_tea_src_final = t_col3.text_input(
                 "Source Label",
                 value=chosen_tea_src,
                 key=f"sig_tea_src_txt_{sel_inst}_{sel_test}_{sel_tea_label}",
+                disabled=step2_locked,
             )
 
         # ======================================================================
@@ -728,8 +753,6 @@ def render_sigma_calculator_page():
                         f"Saved Sigma & Westgard evaluation for {sel_test} ({sel_inst}) to {active_quarter_period}.",
                         "success",
                     )
-                    st.session_state["sig_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(sig_test_wkey, None)
                     st.rerun()
 
     # ==========================================================================

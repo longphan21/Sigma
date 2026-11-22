@@ -5,7 +5,14 @@ from typing import List, Dict, Any, Tuple
 import pandas as pd
 import streamlit as st
 
-from ui_theme import render_page_banner, render_html, queue_popup, format_status_badge_html
+from ui_theme import (
+    render_page_banner,
+    render_html,
+    queue_popup,
+    format_status_badge_html,
+    persistent_selectbox,
+    render_step_lock_header,
+)
 from database import (
     get_all_results_joined,
     save_bias_summary_records,
@@ -206,7 +213,7 @@ def render_bias_calculator_page():
     if df_all.empty:
         with st.container(border=True):
             st.markdown("#### :material/info: No EQA Data Available")
-            st.write("Please upload a VEQAS PDF report in **3. Import PDF** first.")
+            st.write("Please upload a VEQAS PDF report in **Import PDF** first.")
         return
 
     df_saved_all = get_all_bias_summaries()
@@ -221,39 +228,71 @@ def render_bias_calculator_page():
 
     with tab_calc:
         # ======================================================================
-        # STEP 1: QUARTER, INSTRUMENT & ANALYTE SELECTION (UNIFORM ROW)
+        # STEP 1: CONFIGURATION (STATE PERSISTENCE + LOCK STEP 1)
         # ======================================================================
         with st.container(border=True):
-            st.markdown("#### :material/tune: 1. Configuration")
-            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.95, 0.75, 1.35, 1.85, 0.9], vertical_alignment="bottom")
+            step1_locked = render_step_lock_header(
+                title_md="#### :material/tune: 1. Configuration",
+                lock_key="_lock_bias_step1",
+                step_label="Step 1",
+                unlock_also_keys=["_lock_bias_step2"],
+            )
+
+            c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.85, 0.65, 1.70, 1.80, 0.80], vertical_alignment="bottom")
+
+            def _unlock_step2(_val=None):
+                st.session_state["_lock_bias_step2"] = False
 
             q_idx_map = {q_no: label for q_no, label, _ in QUARTER_OPTIONS}
-            sel_q_no = c_q.selectbox(
-                "Quarter",
+            sel_q_no = persistent_selectbox(
+                c_q,
+                label="Quarter",
                 options=[1, 2, 3, 4],
+                persist_key="_persist_bias_q_no",
+                default_value=3,
                 format_func=lambda x: q_idx_map[x],
-                index=2,
-                key="bias_quarter_no_sel",
+                disabled=step1_locked,
+                on_value_change=_unlock_step2,
             )
-            sel_year = c_yr.selectbox(
-                "Year",
+            sel_year = persistent_selectbox(
+                c_yr,
+                label="Year",
                 options=years_in_db,
-                index=0,
-                key="bias_year_sel",
+                persist_key="_persist_bias_year",
+                default_value=years_in_db[0],
+                disabled=step1_locked,
+                on_value_change=_unlock_step2,
             )
 
             cutoff_month = sel_q_no * 3
             active_quarter_period = f"Q{sel_q_no}/{sel_year}"
 
             inst_list = sorted(df_all["instrument_name"].dropna().unique().tolist())
-            sel_inst = c_inst.selectbox("Instrument", inst_list, key="bias_inst_sel")
+            sel_inst = persistent_selectbox(
+                c_inst,
+                label="Instrument",
+                options=inst_list,
+                persist_key="_persist_bias_inst",
+                default_value=inst_list[0],
+                disabled=step1_locked,
+                on_value_change=_unlock_step2,
+            )
 
             df_inst_all = df_all[df_all["instrument_name"] == sel_inst].copy()
 
+            if "_persist_bias_cutoff" not in st.session_state:
+                st.session_state["_persist_bias_cutoff"] = True
+            st.session_state["_w_bias_cutoff"] = bool(st.session_state["_persist_bias_cutoff"])
+
+            def _on_cutoff_change():
+                st.session_state["_persist_bias_cutoff"] = bool(st.session_state.get("_w_bias_cutoff", True))
+                st.session_state["_lock_bias_step2"] = False
+
             filter_by_quarter_cutoff = st.checkbox(
                 f"Filter up to {cutoff_month:02d}/{sel_year} ({active_quarter_period})",
-                value=True,
-                key="chk_filter_cutoff_quarter",
+                key="_w_bias_cutoff",
+                disabled=step1_locked,
+                on_change=_on_cutoff_change,
             )
 
             if filter_by_quarter_cutoff:
@@ -291,18 +330,26 @@ def render_bias_calculator_page():
                 ]
                 saved_tests_in_quarter = set(sub_q_saved["test_code"].astype(str).str.strip().str.upper().tolist())
 
-            sel_test = c_test.selectbox(
-                f"Analyte ({len(test_codes_list)})",
+            sel_test = persistent_selectbox(
+                c_test,
+                label="Analyte",
                 options=test_codes_list,
+                persist_key=f"_persist_bias_test::{sel_inst}",
+                default_value=test_codes_list[0],
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_tests_in_quarter else "") + test_label_map.get(k, k),
-                key=f"bias_test_sel_{sel_inst}",
+                disabled=step1_locked,
+                on_value_change=_unlock_step2,
             )
 
-            num_levels = c_lv.selectbox(
-                "Levels",
+            num_levels = persistent_selectbox(
+                c_lv,
+                label="Levels",
                 options=[2, 3, 1],
+                persist_key=f"_persist_bias_levels::{sel_inst}",
+                default_value=2,
                 format_func=lambda x: f"{x} Levels" if x > 1 else "1 Level",
-                key="bias_num_levels",
+                disabled=step1_locked,
+                on_value_change=_unlock_step2,
             )
 
             months_preview = ", ".join(all_months_inst) if all_months_inst else "-"
@@ -317,7 +364,7 @@ def render_bias_calculator_page():
             """)
 
         # ======================================================================
-        # STEP 2: MONTH SELECTION TABLE
+        # STEP 2: MONTH SELECTION TABLE (STATE PERSISTENCE + LOCK STEP 2)
         # ======================================================================
         df_test = df_inst[df_inst["test_code"] == sel_test].copy()
         df_test["_ym_sort"] = df_test["month_year"].apply(parse_ym_tuple)
@@ -357,27 +404,58 @@ def render_bias_calculator_page():
         if reset_counter_key not in st.session_state:
             st.session_state[reset_counter_key] = 0
 
+        if "_persist_bias_months" not in st.session_state:
+            st.session_state["_persist_bias_months"] = {}
+
+        if "_lock_bias_step2" not in st.session_state:
+            st.session_state["_lock_bias_step2"] = False
+        step2_locked = bool(st.session_state["_lock_bias_step2"])
+
+        persisted_months_map = st.session_state["_persist_bias_months"].get(state_sig)
+
         for idx in range(num_levels):
             lv_no = idx + 1
-            saved_set = saved_months_by_lv.get(lv_no, set())
-            if st.session_state.get(f"force_empty_{state_sig}", False):
-                df_test[f"use_lv{lv_no}"] = False
+            if persisted_months_map is not None and lv_no in persisted_months_map:
+                chosen_set = persisted_months_map[lv_no]
             else:
-                df_test[f"use_lv{lv_no}"] = [
-                    str(m).strip() in saved_set for m in df_test["month_year"].tolist()
-                ]
+                chosen_set = saved_months_by_lv.get(lv_no, set())
+            df_test[f"use_lv{lv_no}"] = [
+                str(m).strip() in chosen_set for m in df_test["month_year"].tolist()
+            ]
 
         with st.container(border=True):
-            hdr_c1, hdr_c2 = st.columns([3.8, 1.2], vertical_alignment="center")
+            def _toggle_bias_step2():
+                new_st = not bool(st.session_state.get("_lock_bias_step2", False))
+                st.session_state["_lock_bias_step2"] = new_st
+                if new_st:
+                    st.session_state["_lock_bias_step1"] = True
+
+            hdr_c1, hdr_c2, hdr_c3 = st.columns([2.9, 1.05, 1.05], vertical_alignment="center")
             with hdr_c1:
+                lock2_badge = " &nbsp; `🔒 Locked`" if step2_locked else ""
                 st.markdown(
-                    f"#### :material/check_box: 2. Select Months — **{sel_test}** ({full_name_str})"
+                    f"#### :material/check_box: 2. Select Months — **{sel_test}** ({full_name_str}){lock2_badge}"
                 )
             with hdr_c2:
-                if st.button(":material/restart_alt: Clear Selection", type="secondary", use_container_width=True):
-                    st.session_state[f"force_empty_{state_sig}"] = True
+                if st.button(
+                    ":material/restart_alt: Clear Selection",
+                    type="secondary",
+                    use_container_width=True,
+                    disabled=step2_locked,
+                ):
+                    st.session_state["_persist_bias_months"][state_sig] = {
+                        i + 1: set() for i in range(num_levels)
+                    }
                     st.session_state[reset_counter_key] += 1
                     st.rerun()
+            with hdr_c3:
+                st.button(
+                    ":material/lock_open: Unlock Step 2" if step2_locked else ":material/lock: Lock Step 2",
+                    key="_btn_lock_bias_step2",
+                    type="primary" if step2_locked else "secondary",
+                    use_container_width=True,
+                    on_click=_toggle_bias_step2,
+                )
 
             df_test["bias_3dec_display"] = df_test["exact_bias_pct"].round(3)
             editor_cols = (
@@ -408,6 +486,7 @@ def render_bias_calculator_page():
                     short_check_labels[idx],
                     width="small",
                     default=False,
+                    disabled=step2_locked,
                 )
 
             edited_df = st.data_editor(
@@ -415,11 +494,20 @@ def render_bias_calculator_page():
                 column_config=col_cfg,
                 use_container_width=True,
                 hide_index=True,
-                key=f"editor_manual_bias_{state_sig}_{num_levels}_{filter_by_quarter_cutoff}_{st.session_state[reset_counter_key]}",
+                key=f"editor_manual_bias_{state_sig}_{num_levels}_{filter_by_quarter_cutoff}_{st.session_state[reset_counter_key]}_{int(step2_locked)}",
             )
 
+            # Đồng bộ các tháng đã tích vào bộ nhớ bền vững để không bị mất khi khóa Step 2 hoặc bấm Save
+            current_checked_map = {}
+            for idx in range(num_levels):
+                lv_no = idx + 1
+                col_flag = f"use_lv{lv_no}"
+                sel_m = edited_df.loc[edited_df[col_flag] == True, "month_year"].astype(str).str.strip().tolist()
+                current_checked_map[lv_no] = set(sel_m)
+            st.session_state["_persist_bias_months"][state_sig] = current_checked_map
+
         # ======================================================================
-        # STEP 3: RESULTS & SAVE TO QUARTER
+        # STEP 3: RESULTS & SAVE TO QUARTER (ALWAYS EDITABLE)
         # ======================================================================
         with st.container(border=True):
             st.markdown(f"#### :material/calculate: 3. Mean Bias % — **{active_quarter_period}**")
@@ -496,7 +584,6 @@ def render_bias_calculator_page():
                         )
                         st.rerun()
                     else:
-                        st.session_state[f"force_empty_{state_sig}"] = False
                         save_bias_summary_records(
                             instrument_name=sel_inst,
                             test_code=sel_test,

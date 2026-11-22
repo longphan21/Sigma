@@ -2,7 +2,13 @@ import io
 import pandas as pd
 import streamlit as st
 
-from ui_theme import render_page_banner, render_html, queue_popup
+from ui_theme import (
+    render_page_banner,
+    render_html,
+    queue_popup,
+    persistent_selectbox,
+    render_step_lock_header,
+)
 from database import (
     get_all_results_joined,
     get_all_tea_standards,
@@ -15,7 +21,6 @@ from database import (
 TEA_SOURCE_OPTIONS = [
     "CLIA",
     "EFLM",
-    "AAB",
     "BV (Desirable)",
     "BV (Minimum)",
     "BV (Optimum)",
@@ -66,9 +71,9 @@ def render_tea_manager_page():
                 saved_custom_sources.append(s_clean)
 
     all_source_options = (
-            [s for s in TEA_SOURCE_OPTIONS if s != "Other"]
-            + sorted(saved_custom_sources)
-            + ["Other"]
+        [s for s in TEA_SOURCE_OPTIONS if s != "Other"]
+        + sorted(saved_custom_sources)
+        + ["Other"]
     )
 
     inst_set = set()
@@ -79,20 +84,27 @@ def render_tea_manager_page():
     inst_list = sorted([str(x).strip() for x in inst_set if str(x).strip()])
 
     # ==========================================================================
-    # SECTION 1: ADD / UPDATE TEA STANDARD (WITH INSTRUMENT)
+    # STEP 1: INSTRUMENT & ANALYTE SELECTION (LOCKABLE) + TEA INPUT
     # ==========================================================================
     with st.container(border=True):
-        st.markdown("#### :material/add_circle: 1. Add / Update TEa% Standard")
+        step1_locked = render_step_lock_header(
+            title_md="#### :material/add_circle: 1. Add / Update TEa% Standard",
+            lock_key="_lock_tea_step1",
+            step_label="Step 1",
+        )
 
         inst_options = inst_list + ["+ Custom Instrument"]
         c_inst, c1, c2, c3, c4, c5 = st.columns(
             [1.75, 1.75, 0.55, 1.05, 0.75, 0.75], vertical_alignment="bottom"
         )
 
-        sel_inst_opt = c_inst.selectbox(
-            "Instrument",
+        sel_inst_opt = persistent_selectbox(
+            c_inst,
+            label="Instrument",
             options=inst_options,
-            key="tea_inst_sel",
+            persist_key="_persist_tea_inst",
+            default_value=inst_options[0],
+            disabled=step1_locked,
         )
         active_inst_for_lookup = "" if sel_inst_opt == "+ Custom Instrument" else sel_inst_opt
 
@@ -114,17 +126,31 @@ def render_tea_manager_page():
         unit_lookup = {x[0]: x[2] for x in catalog}
         name_lookup = {x[0]: x[1] for x in catalog}
 
-        sel_test_opt = c1.selectbox(
-            f"Analyte ({len(configured_tests_on_inst)}/{len(catalog)} configured)",
+        sel_test_opt = persistent_selectbox(
+            c1,
+            label="Analyte",
             options=test_options,
+            persist_key=f"_persist_tea_test::{sel_inst_opt}",
+            default_value=test_options[0],
             format_func=lambda k: label_map.get(k, k),
-            key=f"tea_analyte_sel_{sel_inst_opt}",
+            disabled=step1_locked,
         )
 
         default_unit = unit_lookup.get(sel_test_opt, "") if sel_test_opt != "+ Custom Analyte" else ""
-        unit_in = c2.text_input("Unit", value=default_unit, key=f"tea_unit_in_{sel_inst_opt}_{sel_test_opt}")
+        unit_in = c2.text_input(
+            "Unit",
+            value=default_unit,
+            key=f"tea_unit_in_{sel_inst_opt}_{sel_test_opt}",
+            disabled=step1_locked,
+        )
 
-        sel_source = c3.selectbox("TEa Source", options=all_source_options, key="tea_source_sel")
+        sel_source = persistent_selectbox(
+            c3,
+            label="TEa Source",
+            options=all_source_options,
+            persist_key="_persist_tea_source",
+            default_value=all_source_options[0],
+        )
 
         existing_val = 10.0
         if not df_tea.empty and sel_inst_opt != "+ Custom Instrument" and sel_test_opt != "+ Custom Analyte":
@@ -146,11 +172,13 @@ def render_tea_manager_page():
             key=f"tea_pct_in_{sel_inst_opt}_{sel_test_opt}_{sel_source}",
         )
 
-        is_def_opt = c5.selectbox(
-            "Default",
+        is_def_opt = persistent_selectbox(
+            c5,
+            label="Default",
             options=[True, False],
+            persist_key="_persist_tea_is_default",
+            default_value=True,
             format_func=lambda x: "★ Default" if x else "Secondary",
-            key="tea_is_default_sel",
         )
 
         need_custom_row = (
@@ -161,17 +189,17 @@ def render_tea_manager_page():
         if need_custom_row:
             sc0, sc1, sc2, sc3 = st.columns([1.3, 1.0, 1.5, 1.4], vertical_alignment="bottom")
             custom_inst = (
-                sc0.text_input("Custom Instrument Name", placeholder="e.g., Cobas c501")
+                sc0.text_input("Custom Instrument Name", placeholder="e.g., Cobas c501", disabled=step1_locked)
                 if sel_inst_opt == "+ Custom Instrument"
                 else sel_inst_opt
             )
             custom_code = (
-                sc1.text_input("Custom Code", placeholder="e.g., LDH")
+                sc1.text_input("Custom Code", placeholder="e.g., LDH", disabled=step1_locked)
                 if sel_test_opt == "+ Custom Analyte"
                 else sel_test_opt
             )
             custom_name = (
-                sc2.text_input("Full Name", placeholder="e.g., Lactate Dehydrogenase")
+                sc2.text_input("Full Name", placeholder="e.g., Lactate Dehydrogenase", disabled=step1_locked)
                 if sel_test_opt == "+ Custom Analyte"
                 else name_lookup.get(sel_test_opt, sel_test_opt)
             )
@@ -205,19 +233,25 @@ def render_tea_manager_page():
                 st.rerun()
             else:
                 norm_c, norm_n = normalize_test_info(custom_code, custom_name)
+                clean_inst_saved = str(custom_inst).strip()
+                clean_src_saved = str(custom_source).strip()
                 save_tea_standard(
-                    instrument_name=str(custom_inst).strip(),
+                    instrument_name=clean_inst_saved,
                     test_code=norm_c,
                     test_full_name=norm_n or norm_c,
                     unit=unit_in,
-                    tea_source=custom_source,
+                    tea_source=clean_src_saved,
                     tea_pct=float(tea_pct_in),
                     is_default=bool(is_def_opt),
                     notes=notes_in,
                 )
+                # Giữ nguyên Instrument, Analyte và Source vừa lưu (kể cả khi vừa tạo mới)
+                st.session_state["_persist_tea_inst"] = clean_inst_saved
+                st.session_state[f"_persist_tea_test::{clean_inst_saved}"] = norm_c
+                st.session_state["_persist_tea_source"] = clean_src_saved
                 queue_popup(
                     "Saved Successfully",
-                    f"Saved TEa = {float(tea_pct_in):.2f}% ({custom_source}) for {norm_c} on {custom_inst}.",
+                    f"Saved TEa = {float(tea_pct_in):.2f}% ({clean_src_saved}) for {norm_c} on {clean_inst_saved}.",
                     "success",
                 )
                 st.rerun()
@@ -233,7 +267,7 @@ def render_tea_manager_page():
         """)
 
     # ==========================================================================
-    # SECTION 2: SAVED TEA STANDARDS TABLE & BULK EDITOR
+    # STEP 2: SAVED TEA STANDARDS TABLE & BULK EDITOR
     # ==========================================================================
     with st.container(border=True):
         st.markdown("#### :material/table_chart: 2. Saved TEa% Standards")
@@ -246,15 +280,29 @@ def render_tea_manager_page():
         saved_inst_list = ["All Instruments"] + sorted(
             [str(x) for x in df_tea["instrument_name"].dropna().unique().tolist() if str(x).strip()]
         )
-        sel_filter_inst = f0.selectbox("Filter Instrument", options=saved_inst_list, key="tea_filter_inst")
+        sel_filter_inst = persistent_selectbox(
+            f0,
+            label="Filter Instrument",
+            options=saved_inst_list,
+            persist_key="_persist_tea_filter_inst",
+            default_value="All Instruments",
+        )
 
         src_list = ["All Sources"] + sorted(df_tea["tea_source"].dropna().unique().tolist())
-        sel_filter_src = f1.selectbox("Filter Source", options=src_list, key="tea_filter_src")
+        sel_filter_src = persistent_selectbox(
+            f1,
+            label="Filter Source",
+            options=src_list,
+            persist_key="_persist_tea_filter_src",
+            default_value="All Sources",
+        )
         kw_filter = f2.text_input("Search Analyte", placeholder="ALT, AST, GLU...", key="tea_filter_kw").strip().lower()
-        only_default = f3.selectbox(
-            "View Mode",
+        only_default = persistent_selectbox(
+            f3,
+            label="View Mode",
             options=["All Records", "Default Only (★)"],
-            key="tea_filter_mode",
+            persist_key="_persist_tea_filter_mode",
+            default_value="All Records",
         )
 
         df_view = df_tea.copy()
@@ -316,10 +364,13 @@ def render_tea_manager_page():
         with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
             df_export.to_excel(writer, index=False, sheet_name="TEa_Standards")
 
+        inst_fname_part = sel_filter_inst if sel_filter_inst != "All Instruments" else "Tất cả dòng máy"
+        for ch in ("\\", "/", ":", "*", "?", '"', "<", ">", "|"):
+            inst_fname_part = inst_fname_part.replace(ch, "-")
         act2.download_button(
             ":material/table_view: Export Excel",
             data=excel_buf.getvalue(),
-            file_name="TEa_Standards.xlsx",
+            file_name=f"{inst_fname_part} - TEa Standards.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )

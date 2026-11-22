@@ -7,7 +7,14 @@ import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from ui_theme import render_page_banner, render_html, queue_popup, format_status_badge_html
+from ui_theme import (
+    render_page_banner,
+    render_html,
+    queue_popup,
+    format_status_badge_html,
+    persistent_selectbox,
+    render_step_lock_header,
+)
 from database import (
     get_all_results_joined,
     get_all_iqc_lots,
@@ -371,25 +378,41 @@ def render_cv_manager_page():
 
     with tab_calc:
         # ======================================================================
-        # STEP 1: CONFIGURATION (QUARTER, INSTRUMENT, ANALYTE, LEVELS)
+        # STEP 1: CONFIGURATION (STATE PERSISTENCE + LOCK STEP 1)
         # ======================================================================
         with st.container(border=True):
-            st.markdown("#### :material/tune: 1. Configuration")
+            step1_locked = render_step_lock_header(
+                title_md="#### :material/tune: 1. Configuration",
+                lock_key="_lock_cv_step1",
+                step_label="Step 1",
+                unlock_also_keys=["_lock_cv_step2"],
+            )
+
             c_q, c_yr, c_inst, c_test, c_lv = st.columns([0.85, 0.65, 1.70, 1.80, 0.80], vertical_alignment="bottom")
 
+            def _on_cv_context_change(_val=None):
+                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
+                st.session_state["_lock_cv_step2"] = False
+
             q_idx_map = {q_no: label for q_no, label, _ in QUARTER_OPTIONS}
-            sel_q_no = c_q.selectbox(
-                "Quarter",
+            sel_q_no = persistent_selectbox(
+                c_q,
+                label="Quarter",
                 options=[1, 2, 3, 4],
+                persist_key="_persist_cv_q_no",
+                default_value=3,
                 format_func=lambda x: q_idx_map[x],
-                index=2,
-                key="cv_quarter_no_sel",
+                disabled=step1_locked,
+                on_value_change=_on_cv_context_change,
             )
-            sel_year = c_yr.selectbox(
-                "Year",
+            sel_year = persistent_selectbox(
+                c_yr,
+                label="Year",
                 options=years_in_db,
-                index=0,
-                key="cv_year_sel",
+                persist_key="_persist_cv_year",
+                default_value=years_in_db[0],
+                disabled=step1_locked,
+                on_value_change=_on_cv_context_change,
             )
             active_quarter_period = f"Q{sel_q_no}/{sel_year}"
 
@@ -400,11 +423,15 @@ def render_cv_manager_page():
                 inst_set.update(df_lots["instrument_name"].dropna().unique().tolist())
             inst_list = sorted([x for x in inst_set if str(x).strip()])
 
-            sel_inst = c_inst.selectbox("Instrument", inst_list, key="cv_inst_sel")
-
-            if st.session_state.get("cv_prev_inst") != sel_inst:
-                st.session_state["cv_prev_inst"] = sel_inst
-                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
+            sel_inst = persistent_selectbox(
+                c_inst,
+                label="Instrument",
+                options=inst_list,
+                persist_key="_persist_cv_inst",
+                default_value=inst_list[0],
+                disabled=step1_locked,
+                on_value_change=_on_cv_context_change,
+            )
 
             catalog_map: Dict[str, Tuple[str, str, str]] = {}
             if not df_eqa.empty:
@@ -448,41 +475,25 @@ def render_cv_manager_page():
                 ]
                 saved_tests_in_quarter = set(sub_q_saved["test_code"].astype(str).str.strip().str.upper().tolist())
 
-            # Khóa cứng trạng thái Analyte theo từng máy, không reset về index 0 khi nhãn (lots / ✅) thay đổi
-            if "cv_persisted_test_by_inst" not in st.session_state:
-                st.session_state["cv_persisted_test_by_inst"] = {}
-
-            test_widget_key = f"cv_test_sel_{sel_inst}"
-
-            def _on_test_change(inst_name: str, w_key: str):
-                picked_t = st.session_state.get(w_key)
-                if picked_t:
-                    st.session_state["cv_persisted_test_by_inst"][inst_name] = picked_t
-                st.session_state["cv_lot_edit_mode"] = "+ New Lot"
-
-            persisted_test = st.session_state["cv_persisted_test_by_inst"].get(sel_inst)
-            if persisted_test not in test_codes_list:
-                persisted_test = test_codes_list[0]
-                st.session_state["cv_persisted_test_by_inst"][sel_inst] = persisted_test
-
-            default_test_idx = test_codes_list.index(persisted_test)
-
-            sel_test = c_test.selectbox(
-                f"Analyte ({len(test_codes_list)})",
+            sel_test = persistent_selectbox(
+                c_test,
+                label="Analyte",
                 options=test_codes_list,
-                index=default_test_idx,
+                persist_key=f"_persist_cv_test::{sel_inst}",
+                default_value=test_codes_list[0],
                 format_func=lambda k: ("✅ " if k.strip().upper() in saved_tests_in_quarter else "") + test_label_map.get(k, k),
-                key=test_widget_key,
-                on_change=_on_test_change,
-                args=(sel_inst, test_widget_key),
+                disabled=step1_locked,
+                on_value_change=_on_cv_context_change,
             )
-            st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
 
-            num_levels = c_lv.selectbox(
-                "Levels",
+            num_levels = persistent_selectbox(
+                c_lv,
+                label="Levels",
                 options=[2, 3, 1],
+                persist_key=f"_persist_cv_levels::{sel_inst}",
+                default_value=2,
                 format_func=lambda x: f"{x} Levels" if x > 1 else "1 Level",
-                key="cv_num_levels",
+                disabled=step1_locked,
             )
 
             cur_test_info = catalog_map.get(sel_test.upper(), (sel_test, sel_test, ""))
@@ -524,7 +535,12 @@ def render_cv_manager_page():
         # STEP 2: ADD / UPDATE IQC LOT (GIỮ NGUYÊN HIỆN TRẠNG KHI ĐỔI LEVEL/TEST/SAVE)
         # ======================================================================
         with st.container(border=True):
-            st.markdown(f"#### :material/inventory_2: 2. Add / Update IQC Lot — **{sel_test}** ({full_name_str})")
+            step2_locked = render_step_lock_header(
+                title_md=f"#### :material/inventory_2: 2. Add / Update IQC Lot — **{sel_test}** ({full_name_str})",
+                lock_key="_lock_cv_step2",
+                step_label="Step 2",
+                lock_also_keys=["_lock_cv_step1"],
+            )
 
             existing_lot_opts = ["+ New Lot"]
             lot_lookup: Dict[str, Dict[str, Any]] = {}
@@ -628,6 +644,7 @@ def render_cv_manager_page():
                 key="cv_lot_edit_mode",
                 on_change=_on_edit_lot_change,
                 args=(lot_lookup, num_levels),
+                disabled=step2_locked,
             )
 
             sel_lv_no = r1_c2.selectbox(
@@ -635,12 +652,14 @@ def render_cv_manager_page():
                 options=list(range(1, num_levels + 1)),
                 format_func=lambda idx: level_names[idx - 1],
                 key="cv_in_lv",
+                disabled=step2_locked,
             )
 
             lot_no_in = r1_c3.text_input(
                 "Lot No",
                 placeholder="e.g., 62159",
                 key="cv_in_lotno",
+                disabled=step2_locked,
             )
 
             status_in = r1_c4.selectbox(
@@ -648,6 +667,7 @@ def render_cv_manager_page():
                 options=["Active", "Closed"],
                 format_func=lambda s: "🟢 Active" if s == "Active" else "🔒 Closed",
                 key="cv_in_status",
+                disabled=step2_locked,
             )
 
             from_date_in = r1_c5.date_input(
@@ -656,6 +676,7 @@ def render_cv_manager_page():
                 max_value=MAX_PICK_DATE,
                 format="DD/MM/YYYY",
                 key="cv_in_sdate",
+                disabled=step2_locked,
             )
 
             to_date_in = r1_c6.date_input(
@@ -664,6 +685,7 @@ def render_cv_manager_page():
                 max_value=MAX_PICK_DATE,
                 format="DD/MM/YYYY",
                 key="cv_in_cdate",
+                disabled=step2_locked,
             )
 
             r2_c1, r2_c2, r2_c3, r2_c4, r2_c5, r2_c6 = st.columns(
@@ -674,6 +696,7 @@ def render_cv_manager_page():
                 "CV% Input Mode",
                 options=mode_options,
                 key="cv_in_calc_mode",
+                disabled=step2_locked,
             )
 
             is_null_mode = (calc_mode == "CV% Only (Null Mean/SD/n)")
@@ -698,6 +721,7 @@ def render_cv_manager_page():
                     step=0.05,
                     format="%.3f",
                     key="cv_in_cv_man",
+                    disabled=step2_locked,
                 )
                 r2_c5.text_input(
                     "Total QC Points (n)",
@@ -716,6 +740,7 @@ def render_cv_manager_page():
                     step=0.1,
                     format="%.3f",
                     key="cv_in_mean",
+                    disabled=step2_locked,
                 )
 
                 sd_in = r2_c3.number_input(
@@ -725,6 +750,7 @@ def render_cv_manager_page():
                     step=0.01,
                     format="%.4f",
                     key="cv_in_sd",
+                    disabled=step2_locked,
                 )
 
                 auto_cv = round((sd_in / mean_in) * 100.0, 3) if mean_in > 0 else 0.0
@@ -745,6 +771,7 @@ def render_cv_manager_page():
                         step=0.05,
                         format="%.3f",
                         key="cv_in_cv_man",
+                        disabled=step2_locked,
                     )
 
                 n_points_in = r2_c5.number_input(
@@ -753,21 +780,18 @@ def render_cv_manager_page():
                     max_value=10000,
                     step=1,
                     key="cv_in_n",
+                    disabled=step2_locked,
                 )
                 mean_to_save = float(mean_in)
                 sd_to_save = float(sd_in)
                 n_to_save = int(n_points_in)
 
-            if r2_c6.button(":material/save: Save Lot Data", type="primary", use_container_width=True):
+            if r2_c6.button(":material/save: Save Lot Data", type="primary", use_container_width=True, disabled=step2_locked):
                 if not str(lot_no_in).strip():
                     queue_popup("Missing Lot No", "Please enter a Lot Number before saving.", "warning")
-                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
                 elif float(cv_in) <= 0:
                     queue_popup("Invalid CV%", "CV% must be greater than 0.", "warning")
-                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
                 else:
                     from_date_str = from_date_in.strftime("%d/%m/%Y") if isinstance(from_date_in, date) else ""
@@ -797,8 +821,6 @@ def render_cv_manager_page():
                         f"Saved Lot {lot_no_in} ({period_saved} | {level_names[int(sel_lv_no) - 1]}: CV = {float(cv_in):.3f}%, {n_msg}).",
                         "success",
                     )
-                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
 
         # ======================================================================
@@ -960,8 +982,6 @@ def render_cv_manager_page():
                             f"Saved Cumulative CV% for {sel_test} ({sel_inst}) to {active_quarter_period}.",
                             "success",
                         )
-                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
 
                 del_lot_map = {
@@ -977,8 +997,6 @@ def render_cv_manager_page():
                 if act_b3.button(":material/delete: Delete Lot", type="secondary", use_container_width=True):
                     delete_iqc_lot(del_lot_map[sel_del_lot])
                     queue_popup("Deleted Lot", f"Removed {sel_del_lot}.", "error")
-                    st.session_state["cv_persisted_test_by_inst"][sel_inst] = sel_test
-                    st.session_state.pop(test_widget_key, None)
                     st.rerun()
 
     # ==========================================================================

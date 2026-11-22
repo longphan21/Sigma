@@ -370,7 +370,16 @@ def inject_custom_css():
             min-height: 34px !important;
         }
 
-        /* DANH SÁCH XỔ XUỐNG (DROPDOWN POPOVER): CHỮ NHỎ & HIỆN FULL TÊN MÁY */
+        /* LOCKED / DISABLED STEP CONTROLS */
+        div[data-baseweb="select"][aria-disabled="true"] > div,
+        div[data-baseweb="input"]:has(input:disabled),
+        div[data-baseweb="base-input"]:has(input:disabled) {
+            background-color: #EFF6F0 !important;
+            border-color: #B7DFB9 !important;
+            opacity: 0.92 !important;
+        }
+
+        /* DROPDOWN POPOVER: COMPACT FONT & FULL INSTRUMENT NAME */
         div[data-baseweb="popover"] {
             min-width: 270px !important;
             width: auto !important;
@@ -388,6 +397,11 @@ def inject_custom_css():
             line-height: 1.3 !important;
             padding-top: 5px !important;
             padding-bottom: 5px !important;
+        }
+        div[data-baseweb="select"] > div:focus-within,
+        div[data-baseweb="input"]:focus-within {
+            border-color: #2E7D32 !important;
+            box-shadow: 0 0 0 1px #2E7D32 !important;
         }
 
         div[data-baseweb="select"],
@@ -808,3 +822,108 @@ def format_status_badge_html(status_val: str) -> str:
     if s in ("INACTIVE", "⏸ INACTIVE"):
         return '<span class="status-badge badge-warn">⏸ Inactive</span>'
     return f'<span class="status-badge badge-warn">{status_val}</span>'
+
+
+# ==============================================================================
+# 4. STATE PERSISTENCE & STEP-BY-STEP LOCKING HELPERS
+# ==============================================================================
+def persistent_selectbox(
+    container,
+    label: str,
+    options: list,
+    persist_key: str,
+    default_value=None,
+    format_func=None,
+    disabled: bool = False,
+    on_value_change=None,
+    label_visibility: str = "visible",
+):
+    """
+    Selectbox có State Persistence:
+    - Lưu giá trị vào persist_key (non-widget key) để không bao giờ bị Streamlit reset
+      về index 0 khi Save, khi format_func đổi nhãn (thêm ✅ / số lots), đóng popup OK,
+      hay khi chuyển qua lại giữa các tab Sidebar.
+    """
+    if not options:
+        return None
+
+    saved_val = st.session_state.get(persist_key)
+    if saved_val not in options:
+        if default_value is not None and default_value in options:
+            saved_val = default_value
+        else:
+            saved_val = options[0]
+        st.session_state[persist_key] = saved_val
+
+    w_key = f"_w_{persist_key}"
+    st.session_state[w_key] = saved_val
+
+    def _handle_change():
+        new_val = st.session_state.get(w_key)
+        if new_val in options:
+            st.session_state[persist_key] = new_val
+            if on_value_change is not None:
+                on_value_change(new_val)
+
+    kwargs = {
+        "label": label,
+        "options": options,
+        "key": w_key,
+        "disabled": disabled,
+        "on_change": _handle_change,
+        "label_visibility": label_visibility,
+    }
+    if format_func is not None:
+        kwargs["format_func"] = format_func
+
+    val = container.selectbox(**kwargs)
+    if val in options:
+        st.session_state[persist_key] = val
+    return val
+
+
+def render_step_lock_header(
+    title_md: str,
+    lock_key: str,
+    step_label: str = "Step 1",
+    lock_also_keys: list = None,
+    unlock_also_keys: list = None,
+) -> bool:
+    """
+    Hiển thị thanh tiêu đề Bước kèm nút Lock / Unlock (Step-by-Step Locking).
+    Trả về True nếu bước hiện tại đang bị khóa.
+    """
+    if lock_key not in st.session_state:
+        st.session_state[lock_key] = False
+
+    is_locked = bool(st.session_state[lock_key])
+
+    def _toggle_lock():
+        new_state = not bool(st.session_state.get(lock_key, False))
+        st.session_state[lock_key] = new_state
+        if new_state and lock_also_keys:
+            for k in lock_also_keys:
+                st.session_state[k] = True
+        elif not new_state and unlock_also_keys:
+            for k in unlock_also_keys:
+                st.session_state[k] = False
+
+    hdr_l, hdr_r = st.columns([3.8, 1.2], vertical_alignment="center")
+    with hdr_l:
+        lock_suffix = " &nbsp; `🔒 Locked`" if is_locked else ""
+        st.markdown(f"{title_md}{lock_suffix}")
+    with hdr_r:
+        btn_label = (
+            f":material/lock_open: Unlock {step_label}"
+            if is_locked
+            else f":material/lock: Lock {step_label}"
+        )
+        st.button(
+            btn_label,
+            key=f"_btn_lock_{lock_key}",
+            type="primary" if is_locked else "secondary",
+            use_container_width=True,
+            on_click=_toggle_lock,
+        )
+
+    return is_locked
